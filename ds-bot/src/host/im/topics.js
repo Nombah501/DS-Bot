@@ -44,6 +44,9 @@ export function accessTargets(person, state) {
 export function topicTarget(conn, address) {
   const chat = conn.chats?.[address.key]
   if (chat === undefined) return undefined
+  if (chat.kind === 'group' && chat.isForum === true && (address.threadId === undefined || address.threadId === 1)) {
+    return chat.topics?.[1]?.target ?? (conn.botId === undefined || conn.botId === '' ? undefined : { botId: conn.botId })
+  }
   if (address.threadId !== undefined) return chat.topics?.[address.threadId]?.target
   return chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
 }

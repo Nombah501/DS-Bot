@@ -178,7 +178,7 @@ export default {
         )
         const { images, files } = await fileBlocks(message)
         await handlers.onMessage({
-          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
+          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           text: kind === 'group' ? strip(raw) : raw,
           images,
@@ -195,7 +195,7 @@ export default {
         const from = query.from ?? {}
         await call('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {})
         await handlers.onAction({
-          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
+          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           data: String(query.data ?? ''),
           messageId: message.message_id,
@@ -291,6 +291,10 @@ export default {
 
     return {
       send,
+      isAdmin: async (chat, userId) => {
+        const member = await call('getChatMember', { chat_id: chat.key, user_id: Number(userId) })
+        return member?.status === 'creator' || member?.status === 'administrator'
+      },
       createTopic: async (chat, name) => {
         const topic = await call('createForumTopic', { chat_id: chat.key, name: Array.from(name).slice(0, 128).join('') })
         if (!Number.isSafeInteger(topic?.message_thread_id) || topic.message_thread_id <= 0) throw new Error('Telegram did not return a Topic ID')
