@@ -109,9 +109,9 @@ test('S1: /status in a Topic reports that target, not the Default Bot', async t 
   const s = await setup(t)
   s.rt.liveOf('b').turn = 1
   s.message('/status', { message_thread_id: 102 })
-  const status = await s.request('sendRichMessage', p => /Writer/.test(p.rich_message.html))
+  const status = await s.request('sendWidget', p => JSON.parse(p.chat_data).name === 'Writer')
   assert.equal(status.params.message_thread_id, 102)
-  assert.match(status.params.rich_message.html, /Working/)
+  assert.equal(JSON.parse(status.params.chat_data).state, 'Working')
   assert.equal(s.prompts.length, 0)
 })
 
