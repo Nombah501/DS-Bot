@@ -50,12 +50,13 @@ export function topicTarget(conn, address) {
 
 export function canDeliver(conn, address, target) {
   if (target === undefined || address.kind !== 'direct') return true
+  if (address.threadId !== undefined && conn.chats?.[address.key]?.topics?.[address.threadId]?.closed) return false
   const chat = conn.chats?.[address.key]
   return sameTarget(topicTarget(conn, address), target)
     && allows(conn.paired?.find(person => person.id === chat?.personId), target)
 }
 
-export function privateTopicCreator(rt, handleOf) {
+export function privateTopicCreator(rt, handleOf, textFor) {
   const pending = new Map()
   return function ensurePrivateTopics(conn, chatKey) {
     const key = JSON.stringify([conn.id, chatKey])
@@ -63,11 +64,33 @@ export function privateTopicCreator(rt, handleOf) {
     const run = (async () => {
       const chat = conn.chats?.[chatKey]
       const handle = handleOf(conn.id)
-      if (conn.account?.hasTopicsEnabled !== true || chat?.kind !== 'direct' || typeof handle?.createTopic !== 'function') return
+      if (chat === undefined || handle === undefined) return
       const person = conn.paired?.find(person => person.id === chat.personId)
-      if (person === undefined) return
+      for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
+        if (topic.closed || topic.replacedBy !== undefined) continue
+        const name = (topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId))?.name
+        const address = { key: chatKey, kind: chat.kind, threadId: Number(threadId) }
+        const reason = name === undefined ? 'topicDeleted' : chat.kind === 'direct' && !allows(person, topic.target) ? 'topicRevoked' : undefined
+        if (reason !== undefined && typeof handle.closeTopic === 'function') {
+          if (!topic.notified) {
+            await handle.send(address, { text: textFor(conn, chat)(reason, { name: topic.name }) })
+            topic.notified = true
+            await rt.save()
+          }
+          await handle.closeTopic(address)
+          topic.closed = true
+          await rt.save()
+          continue
+        }
+        if (name !== undefined && topic.name !== name && typeof handle.renameTopic === 'function') {
+          await handle.renameTopic({ key: chatKey, kind: chat.kind, threadId: Number(threadId) }, name)
+          topic.name = name
+          await rt.save()
+        }
+      }
+      if (conn.account?.hasTopicsEnabled !== true || chat.kind !== 'direct' || person === undefined || typeof handle.createTopic !== 'function') return
       for (const target of accessTargets(person, rt.state)) {
-        if (Object.values(chat.topics ?? {}).some(topic => sameTarget(topic.target, target))) continue
+        if (Object.values(chat.topics ?? {}).some(topic => !topic.closed && topic.replacedBy === undefined && sameTarget(topic.target, target))) continue
         const name = (target.botId !== undefined ? rt.botOf(target.botId) : rt.roomOf(target.roomId))?.name
         const topic = await handle.createTopic({ key: chatKey, kind: chat.kind }, name)
         // Pairing/access can change while the network is in flight.
@@ -76,6 +99,31 @@ export function privateTopicCreator(rt, handleOf) {
         chat.topics[topic.threadId] = { target, name, at: Date.now() }
         await rt.save()
       }
+    })().finally(() => pending.delete(key))
+    pending.set(key, run)
+    return run
+  }
+}
+
+export function topicRestorer(rt, handleOf) {
+  const pending = new Map()
+  return async (conn, address) => {
+    const chat = conn.chats?.[address.key]
+    const topic = chat?.topics?.[address.threadId]
+    const handle = handleOf(conn.id)
+    if (topic === undefined || topic.closed || typeof handle?.createTopic !== 'function') return undefined
+    if (topic.replacedBy !== undefined) return topic.replacedBy
+    if (!canDeliver(conn, address, topic.target)) return undefined
+    const target = topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId)
+    if (target === undefined) return undefined
+    const key = JSON.stringify([conn.id, address.key, address.threadId])
+    if (pending.has(key)) return pending.get(key)
+    const run = (async () => {
+      const created = await handle.createTopic({ key: address.key, kind: chat.kind }, target.name)
+      chat.topics[created.threadId] = { target: topic.target, name: target.name, at: Date.now() }
+      topic.replacedBy = created.threadId
+      await rt.save()
+      return created.threadId
     })().finally(() => pending.delete(key))
     pending.set(key, run)
     return run

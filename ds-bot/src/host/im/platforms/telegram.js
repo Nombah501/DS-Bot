@@ -104,6 +104,7 @@ export default {
           error.status = body.error_code ?? response.status
           if (body.parameters?.retry_after !== undefined) error.retryAfter = Number(body.parameters.retry_after)
           error.permanent = error.status >= 400 && error.status < 500 && error.status !== 429
+          error.topicMissing = error.status === 400 && /(?:message )?thread not found|message_thread_invalid/i.test(error.message)
           throw error
         }
         return body.result
@@ -296,6 +297,8 @@ export default {
         if (!Number.isSafeInteger(topic?.message_thread_id) || topic.message_thread_id <= 0) throw new Error('Telegram did not return a Topic ID')
         return { threadId: topic.message_thread_id }
       },
+      renameTopic: (chat, name) => call('editForumTopic', { chat_id: chat.key, ...thread(chat), name: Array.from(name).slice(0, 128).join('') }),
+      closeTopic: chat => call('closeForumTopic', { chat_id: chat.key, ...thread(chat) }),
       sendCard: async (chat, card) => {
         let messageId
         try {

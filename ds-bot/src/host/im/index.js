@@ -9,7 +9,7 @@ import { replaceFile } from '../files.js'
 import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
-import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicTarget } from './topics.js'
+import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, topicTarget } from './topics.js'
 
 const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
@@ -37,6 +37,8 @@ export function install(rt) {
         working: 'Работает',
         paired: 'Подключено — выберите Topic нужного Bot или группы.',
         denied: 'Этот Bot или группа не входят в ваш список доступа.',
+        topicDeleted: `Topic закрыта: ${values.name} удалён.`,
+        topicRevoked: `Topic закрыта: ${values.name} больше не входит в ваш список доступа.`,
         stale: 'На эту карточку уже ответили.',
         privateOnly: 'Только инициатор может ответить на эту карточку.',
         noFile: 'Этот файл нельзя отправить здесь; отправьте его на компьютере.',
@@ -64,6 +66,8 @@ export function install(rt) {
       working: zh() ? '进行中' : 'Working',
       paired: 'Connected — choose a Topic for the Bot or group.',
       denied: 'This Bot or group is not on your Access list.',
+      topicDeleted: zh() ? `话题已关闭：${values.name} 已删除。` : `Topic closed: ${values.name} was deleted.`,
+      topicRevoked: zh() ? `话题已关闭：${values.name} 已不在你的访问列表中。` : `Topic closed: ${values.name} is no longer on your Access list.`,
       stale: zh() ? '这张卡已经答过了。' : 'This card was already answered.',
       privateOnly: zh() ? '只有发起人可以回答这张卡。' : 'Only the Initiator can answer this card.',
       noFile: zh() ? '这个文件发不过去，请在电脑上发。' : 'This file cannot be sent here; send it on the computer.',
@@ -208,7 +212,34 @@ export function install(rt) {
   /** @type {Map<string, {handle:any, queues:Map<string, {jobs:any[], retry?:any}>, statuses:Map}>} */
   const runners = new Map()
   const statuses = new Map()
-  const ensurePrivateTopics = privateTopicCreator(rt, id => runners.get(id)?.handle)
+  const ensurePrivateTopics = privateTopicCreator(rt, id => runners.get(id)?.handle, textFor)
+  const restoreTopic = topicRestorer(rt, id => runners.get(id)?.handle)
+  const recoverTopic = async (conn, chat) => {
+    const oldThreadId = chat.threadId
+    const threadId = await restoreTopic(conn, chat)
+    if (threadId === undefined) return false
+    const runner = runners.get(conn.id)
+    const oldKey = addressKey(chat)
+    chat.threadId = threadId
+    const draft = runner?.draftChats.get(oldKey)
+    if (draft !== undefined) {
+      runner.draftChats.delete(oldKey)
+      runner.draftChats.set(addressKey(chat), draft)
+    }
+    for (const attempt of runner?.drafts.values() ?? []) {
+      for (const copy of attempt.copies) {
+        if (copy.chat.key === chat.key && copy.chat.threadId === oldThreadId) copy.chat.threadId = threadId
+      }
+    }
+    const data = await cardsOf(conn.id)
+    for (const entries of Object.values(data.cards)) {
+      for (const entry of entries) {
+        if (entry.chatKey === chat.key && entry.threadId === oldThreadId && entry.messageId === undefined && entry.ephemeralMessageId === undefined) entry.threadId = threadId
+      }
+    }
+    scheduleWrite(conn.id)
+    return true
+  }
   const setStatus = (id, next) => {
     // Adapter errors can echo platform responses that quote the token; keep them out of the UI and logs.
     if (typeof next.error === 'string' && next.error !== '') return statuses.set(id, { ...next, error: rt.redactSecrets(next.error), at: Date.now() })
@@ -222,14 +253,16 @@ export function install(rt) {
       const person = conn.paired?.find(person => person.id === chat.personId)
       if (topicMode && chat.kind === 'direct' && conn.account?.hasTopicsEnabled === true) {
         for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (allows(person, topic.target)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+          if (!topic.closed && topic.replacedBy === undefined && allows(person, topic.target)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
         }
         continue
       }
       const target = chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
       if (!topicMode || chat.kind !== 'direct' || chat.personId === undefined || allows(person, target)) out.push({ chatKey, chat, target })
       if (topicMode && chat.kind === 'group') {
-        for (const [threadId, topic] of Object.entries(chat.topics ?? {})) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+        for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
+          if (!topic.closed && topic.replacedBy === undefined) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+        }
       }
     }
     return out
@@ -270,6 +303,11 @@ export function install(rt) {
       try {
         const draft = runner.draftChats.get(chatKey)?.sending
         if (draft !== undefined) await draft
+        if (imPlatform(conn.platform)?.topics === true && job.chat.threadId !== undefined) {
+          while ((fresh(conn.id) ?? conn).chats?.[job.chat.key]?.topics?.[job.chat.threadId]?.replacedBy !== undefined) {
+            job.chat.threadId = (fresh(conn.id) ?? conn).chats[job.chat.key].topics[job.chat.threadId].replacedBy
+          }
+        }
         if (imPlatform(conn.platform)?.topics === true && !canDeliver(fresh(conn.id) ?? conn, job.chat, job.target)) {
           queue.jobs.shift()
           continue
@@ -281,7 +319,16 @@ export function install(rt) {
             : await runner.handle.send(job.chat, job)
         await job.after?.(sent)
         queue.jobs.shift()
-      } catch (error) {
+      } catch (caught) {
+        let error = caught
+        if (imPlatform(conn.platform)?.topics === true && error?.topicMissing === true && !job.topicRecovered) {
+          try {
+            if (await recoverTopic(fresh(conn.id) ?? conn, job.chat)) {
+              job.topicRecovered = true
+              continue
+            }
+          } catch (recoveryError) { error = recoveryError }
+        }
         const how = failClass(error)
         if (how === 'retry') {
           const wait = Number(error?.retryAfter) > 0 ? error.retryAfter * 1000 : RETRY_MS
@@ -316,8 +363,17 @@ export function install(rt) {
     if (copy.ended || !canDeliver(fresh(conn.id) ?? conn, copy.chat, copy.target)) return
     held.lastAt = Date.now()
     held.sending = Promise.resolve(runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text }))
-      .catch(error => {
+      .catch(async caught => {
+        let error = caught
         if (runners.get(conn.id) !== runner) return
+        if (imPlatform(conn.platform)?.topics === true && error?.topicMissing === true) {
+          try {
+            if (await recoverTopic(fresh(conn.id) ?? conn, copy.chat) && !copy.ended && canDeliver(fresh(conn.id) ?? conn, copy.chat, copy.target)) {
+              await runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text })
+              return
+            }
+          } catch (recoveryError) { error = recoveryError }
+        }
         rt.warn('ds-bot: im draft failed: %s', rt.redactSecrets(String(error?.message ?? error)))
         if (Number(error?.retryAfter) > 0) held.lastAt = Date.now() + error.retryAfter * 1000
       })
@@ -656,7 +712,7 @@ export function install(rt) {
     for (const { chat, target } of targets) {
       const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
         && imPlatform(conn.platform)?.privateCards === true && typeof runners.get(conn.id)?.handle?.sendPrivateCard === 'function'
-      const copy = privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + 5 * 60 * 1000, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }) } : {}
+      const copy = privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + 5 * 60 * 1000 } : {}
       const text = textFor(conn, privateCard ? initiator.sender : chat)
       const rendered = typeof body === 'function' ? body(text) : body
       const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
@@ -931,6 +987,9 @@ export function install(rt) {
           && rt.readOnly() === undefined && hasSecrets(conn)
         if (wants && !runners.has(conn.id)) await start(conn)
         else if (!wants && runners.has(conn.id)) await stop(conn.id)
+        if (wants && imPlatform(conn.platform)?.topics === true) {
+          for (const chatKey of Object.keys(conn.chats ?? {})) await ensurePrivateTopics(conn, chatKey)
+        }
       }
       for (const id of [...runners.keys()]) if (conns[id] === undefined) await stop(id)
       for (const id of [...statuses.keys()]) if (conns[id] === undefined) statuses.delete(id)
