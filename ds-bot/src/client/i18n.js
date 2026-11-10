@@ -132,6 +132,14 @@ const ZH = {
   'Add the scopes app_mentions:read, chat:write, im:history and files:read, and subscribe to app_mention and message.im.': '添加 app_mentions:read、chat:write、im:history、files:read 权限，订阅 app_mention 和 message.im 事件。',
   'Install the app to the workspace and paste both tokens.': '把应用安装到工作区，粘贴两个 token。',
   'Talks to': '对话对象',
+  'Default Bot': '默认 Bot',
+  'Access list': '访问列表',
+  'All Bots and groups': '所有 Bot 和群聊',
+  'Selected: {count}': '已选择：{count}',
+  'Choose all Bots and groups or an Access list of existing Bots and groups': '请选择所有 Bot 和群聊或现有 Bot 和群聊的访问列表',
+  'This platform has no Access lists': '此平台没有访问列表',
+  'No such paired person': '找不到这个已配对用户',
+  'Telegram did not return a Topic ID': 'Telegram 没有返回主题 ID',
   'Bound to': '绑定到',
   'Not bound': '未绑定',
   Direct: '私聊',
@@ -1652,6 +1660,17 @@ const HOST_ZH = {
 }
 Object.assign(ZH, HOST_ZH)
 
+const RU = {
+  'Default Bot': 'Bot по умолчанию',
+  'Access list': 'Список доступа',
+  'All Bots and groups': 'Все Bots и группы',
+  'Selected: {count}': 'Выбрано: {count}',
+  'Choose all Bots and groups or an Access list of existing Bots and groups': 'Выберите все Bots и группы или список существующих Bots и групп',
+  'This platform has no Access lists': 'На этой платформе нет списков доступа',
+  'No such paired person': 'Этот пользователь не подключён',
+  'Telegram did not return a Topic ID': 'Telegram не вернул идентификатор Topic',
+}
+
 const fill = (text, params) => (params
   ? text.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
   : text)
@@ -1665,9 +1684,11 @@ export function installLocale(locale) {
   service = locale
   bound = locale.bind(NAMESPACE)
   const off = locale.register(NAMESPACE, 'zh', ZH)
+  const offRu = locale.register(NAMESPACE, 'ru', RU)
   return () => {
     if (service === locale) { service = null; bound = null }
     if (typeof off === 'function') off()
+    if (typeof offRu === 'function') offRu()
   }
 }
 
@@ -1677,6 +1698,7 @@ export function t(key, params) {
 
 // A message from the host, in the interface language.
 export function hostText(message) {
+  if (language().startsWith('ru') && Object.hasOwn(RU, message)) return t(message)
   if (!language().startsWith('zh')) return message
   if (Object.hasOwn(ZH, message)) return t(message)
   for (const [pattern, template] of HOST_ERRORS) {
@@ -1694,4 +1716,4 @@ export function language() {
 export const dateLocale = () => (language().startsWith('zh') ? 'zh-CN' : 'en-US')
 
 // Translations for the tests: the Chinese dictionary itself.
-export const DICTIONARY = { zh: ZH }
+export const DICTIONARY = { zh: ZH, ru: RU }

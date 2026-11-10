@@ -17,7 +17,7 @@ export async function until(read, timeout = 3000) {
   throw new Error('Timed out waiting for Bridge boundary output')
 }
 
-export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true } = {}) {
+export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsb-s1-'))
   const calls = []
   const updates = []
@@ -50,6 +50,8 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
         polls.add(res)
         res.on('close', () => polls.delete(res))
         drain()
+      } else if (method === 'createForumTopic') {
+        respond(res, { ok: true, result: { message_thread_id: ++messageId, name: params.name } })
       } else {
         respond(res, { ok: true, result: method === 'getMe' ? getMe : { message_id: ++messageId, chat: { id: params.chat_id } } })
       }
@@ -111,7 +113,11 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
       if (listener.length >= 2) listener({ id: sessionId }, { type, data, seq: ++seq, time: Date.now() })
     }
   }
-  const connection = await rt.imEndpoint('im-add', { platform: 'telegram', botId: 'a', fields: { token: 'S1-FAKE-TOKEN' } })
+  await rt.load()
+  const connection = existingConnectionId === undefined
+    ? await rt.imEndpoint('im-add', { platform: 'telegram', botId: 'a', fields: { token: 'S1-FAKE-TOKEN' } })
+    : rt.imView().connections.find(conn => conn.id === existingConnectionId)
+  if (existingConnectionId !== undefined) await rt.imEndpoint('im-retry', { id: existingConnectionId })
   await request('getUpdates')
   if (pair) {
     message('hello')

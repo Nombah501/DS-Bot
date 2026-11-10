@@ -14,6 +14,7 @@ import { BotAvatar } from './mark.js'
 import { Caret, useAnchoredMenu } from './model-menu.js'
 import { CheckIcon, ChatsIcon, ChevronLeftIcon, ChevronRightIcon } from './icons.js'
 import { hostText, t } from './i18n.js'
+import { ImAccess } from './im-access.js'
 
 // Brand marks where Simple Icons has one; the others get a plain monogram tile.
 const BRAND = { telegram: 'telegram', weixin: 'wechat', qq: 'qq', discord: 'discord', slack: 'slack' }
@@ -221,7 +222,7 @@ function AddView({ platform, roster, actions, onBack }) {
   return h(Subview, { title: t(shown.name), onBack },
     h('div', { className: 'bt-im-hero' }, h(ImMark, { id: platform, size: 44 }), h(Guide, { platform, domain: fields.domain })),
     h('div', { className: 'bt-set-card bt-im-form' },
-      h(Row, { label: t('Talks to') }, h(TargetMenu, { value: botId ? { botId } : null, roster, label: t('Talks to'), onPick: next => next?.botId && setBotId(next.botId) })),
+      h(Row, { label: t(platform === 'telegram' ? 'Default Bot' : 'Talks to') }, h(TargetMenu, { value: botId ? { botId } : null, roster, label: t(platform === 'telegram' ? 'Default Bot' : 'Talks to'), onPick: next => next?.botId && setBotId(next.botId) })),
       shown.login === 'qr' ? null : shown.fields.map(fieldRow),
       shown.login === 'qr' ? h('div', { className: 'bt-im-qr-row' }, h(QrLogin, { actions, platform, botId, onDone: onBack })) : null,
       shown.login === 'qr' ? null : h('div', { className: 'bt-im-foot' },
@@ -238,15 +239,17 @@ function Initial({ name }) {
   return h('span', { className: 'bt-im-initial', 'aria-hidden': true }, String(name || '?').replace(/^@/, '').slice(0, 1).toUpperCase())
 }
 
-function Requests({ conn, run, busy, actions, withSource = false }) {
+function Requests({ conn, roster, run, busy, actions, withSource = false }) {
+  const [access, setAccess] = useState({})
   return conn.requests.map(request => h('div', { key: `${conn.id}:${request.id}`, className: 'bt-set-row bt-im-request' },
     h(Initial, { name: request.name }),
     h('span', { className: 'bt-set-copy' },
       h('span', { className: 'bt-im-name' }, request.name),
       withSource ? h('span', { className: 'bt-set-hint' }, t('Wants to talk through {bot}', { bot: t(conn.account?.name ?? platformOf(conn.platform).name) })) : null),
     h('span', { className: 'bt-set-control' },
+      platformOf(conn.platform).topics === true ? h(ImAccess, { value: access[request.id] ?? 'all', roster, disabled: busy, onPick: value => setAccess(current => ({ ...current, [request.id]: value })) }) : null,
       h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: busy, onClick: () => run(actions.imPair(conn.id, request.id, false)) }, t('Deny')),
-      h('button', { type: 'button', className: 'bt-send bt-soft-sm', disabled: busy, onClick: () => run(actions.imPair(conn.id, request.id, true)) }, t('Allow')))))
+      h('button', { type: 'button', className: 'bt-send bt-soft-sm', disabled: busy, onClick: () => run(actions.imPair(conn.id, request.id, true, access[request.id] ?? 'all')) }, t('Allow')))))
 }
 
 function useRun() {
@@ -281,10 +284,10 @@ function DetailView({ conn, status, roster, actions, onBack }) {
         h('span', { className: 'bt-set-control' },
           state === 'error' ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: busy, onClick: () => run(actions.imRetry(conn.id)) }, t('Try again')) : null,
           h(Switch, { on: conn.enabled, label: t('Enabled'), disabled: busy, onChange: on => run(actions.imUpdate(conn.id, { enabled: on })) }))),
-      h(Row, { label: t('Talks to') }, h(TargetMenu, { value: conn.botId ? { botId: conn.botId } : null, roster, label: t('Talks to'), disabled: busy, onPick: next => next?.botId && run(actions.imUpdate(conn.id, { botId: next.botId })) }))),
+      h(Row, { label: t(conn.platform === 'telegram' ? 'Default Bot' : 'Talks to') }, h(TargetMenu, { value: conn.botId ? { botId: conn.botId } : null, roster, label: t(conn.platform === 'telegram' ? 'Default Bot' : 'Talks to'), disabled: busy, onPick: next => next?.botId && run(actions.imUpdate(conn.id, { botId: next.botId })) }))),
     conn.requests.length > 0 ? h('section', { className: 'bt-set-section' },
       h('h3', null, t('Waiting for approval')),
-      h('div', { className: 'bt-set-card bt-im-attn' }, h(Requests, { conn, run, busy, actions }))) : null,
+      h('div', { className: 'bt-set-card bt-im-attn' }, h(Requests, { conn, roster, run, busy, actions }))) : null,
     h('section', { className: 'bt-set-section' },
       h('h3', null, t('Accounts')),
       h('div', { className: 'bt-set-card' },
@@ -293,6 +296,7 @@ function DetailView({ conn, status, roster, actions, onBack }) {
           : conn.paired.map(entry => h('div', { key: entry.id, className: 'bt-set-row' },
             h(Initial, { name: entry.name }),
             h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-im-name' }, entry.name)),
+            shown.topics === true ? h(ImAccess, { value: entry.access ?? 'all', roster, disabled: busy, onPick: access => run(actions.imAccess(conn.id, entry.id, access)) }) : null,
             h('button', { type: 'button', className: 'bt-mini bt-im-danger', 'data-confirm': confirm === `p:${entry.id}` || undefined, disabled: busy, onClick: () => ask(`p:${entry.id}`, () => actions.imUnpair(conn.id, entry.id)) }, confirm === `p:${entry.id}` ? t('Remove?') : t('Remove')))))),
     chats.length > 0 ? h('section', { className: 'bt-set-section' },
       h('h3', null, t('Chats')),
@@ -352,7 +356,7 @@ export function ImPage({ roster, actions }) {
     error ? h('div', { className: 'bt-im-banner', role: 'alert' }, hostText(error)) : null,
     waiting.length > 0 ? h('section', { className: 'bt-set-section' },
       h('h3', null, t('Waiting for approval')),
-      h('div', { className: 'bt-set-card bt-im-attn' }, waiting.map(conn => h(Requests, { key: conn.id, conn, run, busy, actions, withSource: true })))) : null,
+      h('div', { className: 'bt-set-card bt-im-attn' }, waiting.map(conn => h(Requests, { key: conn.id, conn, roster, run, busy, actions, withSource: true })))) : null,
     list.length > 0 ? h('section', { className: 'bt-set-section' },
       h('h3', null, t('Your IM bots')),
       h('div', { className: 'bt-set-card' }, list.map(conn => h(BotRow, { key: conn.id, conn, status: statuses[conn.id], roster, onOpen: () => setView({ conn: conn.id }) })))) : null,
@@ -426,6 +430,9 @@ export const IM_CSS = `
 .bt-im-qr-box[data-state=error] .bt-im-qr-caption{color:var(--bt-danger);max-width:320px}
 .bt-im-chat-name{flex-direction:row;align-items:center;gap:8px}
 .bt-im-chat .bt-set-control{gap:8px}
+.bt-im-request .bt-set-control{flex-wrap:wrap;justify-content:flex-end;gap:8px}
+.bt-im-request{flex-wrap:wrap}
+.bt-im-target:focus-visible,.bt-im-menu button:focus-visible{outline:2px solid var(--bt-accent);outline-offset:2px}
 .bt-im-danger:hover{color:var(--bt-danger)}
 .bt-im-danger[data-confirm]{color:var(--bt-danger);background:var(--bt-danger-soft)}
 .bt-im-remove{justify-content:center;color:var(--bt-danger)}

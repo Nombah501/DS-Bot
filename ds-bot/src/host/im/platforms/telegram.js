@@ -8,6 +8,7 @@ const TEXT_LIMIT = 4096
 const POLL_TIMEOUT = 50
 const UPDATES = ['message', 'callback_query', 'stopped_message_generation']
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const thread = chat => chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }
 const keyboard = buttons => ({ inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, ...(button.disabled ? { disabled: {} } : { callback_data: button.data }) }]) })
 const plainCard = card => ({
   text: [card.text, card.details?.text, card.details?.code, card.settled ? `— ${card.settled.answer}` : undefined].filter(Boolean).join('\n'),
@@ -66,7 +67,7 @@ export default {
     if (token === '') throw new Error('Paste the bot token first')
     const me = await callApi(env, token, 'getMe', {})
     if (typeof me?.id !== 'number' || typeof me.username !== 'string') throw new Error('Telegram did not say who this token belongs to')
-    return { account: { id: String(me.id), name: `@${me.username}` } }
+    return { account: { id: String(me.id), name: `@${me.username}`, ...(me.has_topics_enabled === true ? { hasTopicsEnabled: true } : {}) } }
   },
 
   connect(fields, env, handlers) {
@@ -176,7 +177,7 @@ export default {
         )
         const { images, files } = await fileBlocks(message)
         await handlers.onMessage({
-          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from) },
+          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           text: kind === 'group' ? strip(raw) : raw,
           images,
@@ -193,7 +194,7 @@ export default {
         const from = query.from ?? {}
         await call('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {})
         await handlers.onAction({
-          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from) },
+          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           data: String(query.data ?? ''),
           messageId: message.message_id,
@@ -212,7 +213,7 @@ export default {
             const me = await getMe()
             ready = true
             attempt = 0
-            handlers.onStatus({ state: 'ready', account: { id: String(me.id), name: selfName || String(me.id) } })
+            handlers.onStatus({ state: 'ready', account: { id: String(me.id), name: selfName || String(me.id), ...(me.has_topics_enabled === true ? { hasTopicsEnabled: true } : {}) } })
           }
           const updates = await call('getUpdates', { offset: env.runtime.get().offset ?? 0, timeout: POLL_TIMEOUT, allowed_updates: UPDATES }, { timeout: (POLL_TIMEOUT + 15) * 1000 })
           for (const update of Array.isArray(updates) ? updates : []) {
@@ -243,13 +244,13 @@ export default {
     void poll()
 
     const richIds = new Set()
-    const identity = (chat, id) => JSON.stringify([chat.key, id])
+    const identity = (chat, id) => JSON.stringify([chat.key, chat.threadId, id])
     const send = async (chat, { text, buttons, rich = false }) => {
       if (rich) {
         let messageId
         try {
           for (const chunk of chunkRich(text)) {
-            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            const sent = await call('sendRichMessage', { chat_id: chat.key, ...thread(chat), rich_message: { html: chunk.html } })
             messageId = sent?.message_id ?? messageId
             richIds.add(identity(chat, messageId))
           }
@@ -269,11 +270,11 @@ export default {
           : {}
         const sendOne = async (body) => {
           try {
-            return await call('sendMessage', { chat_id: chat.key, text: body, parse_mode: 'HTML', ...markup })
+            return await call('sendMessage', { chat_id: chat.key, ...thread(chat), text: body, parse_mode: 'HTML', ...markup })
           } catch (error) {
             // Telegram rejects entities it cannot parse; the same text goes plain.
             if (body !== chunk.text && /can't parse entities|parse entities/i.test(String(error?.message ?? ''))) {
-              return await call('sendMessage', { chat_id: chat.key, text: chunk.text, ...markup })
+              return await call('sendMessage', { chat_id: chat.key, ...thread(chat), text: chunk.text, ...markup })
             }
             throw error
           }
@@ -286,11 +287,16 @@ export default {
 
     return {
       send,
+      createTopic: async (chat, name) => {
+        const topic = await call('createForumTopic', { chat_id: chat.key, name: Array.from(name).slice(0, 128).join('') })
+        if (!Number.isSafeInteger(topic?.message_thread_id) || topic.message_thread_id <= 0) throw new Error('Telegram did not return a Topic ID')
+        return { threadId: topic.message_thread_id }
+      },
       sendCard: async (chat, card) => {
         let messageId
         try {
           for (const chunk of cardChunks(card)) {
-            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            const sent = await call('sendRichMessage', { chat_id: chat.key, ...thread(chat), rich_message: { html: chunk.html } })
             messageId = sent?.message_id ?? messageId
           }
           return { messageId, cardFormat: 'rich' }
@@ -327,7 +333,7 @@ export default {
           const chunks = chunkRich(text)
           await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: chunks[0]?.html ?? '<p></p>' }, ...markup })
           for (const chunk of chunks.slice(1)) {
-            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            const sent = await call('sendRichMessage', { chat_id: chat.key, ...thread(chat), rich_message: { html: chunk.html } })
             richIds.add(identity(chat, sent?.message_id))
           }
           return
@@ -342,7 +348,7 @@ export default {
           throw error
         }
       },
-      typing: chat => call('sendChatAction', { chat_id: chat.key, action: 'typing' }).catch(() => {}),
+      typing: chat => call('sendChatAction', { chat_id: chat.key, ...thread(chat), action: 'typing' }).catch(() => {}),
       stop: () => {
         stopped = true
         for (const abort of inFlight) abort.abort(stoppedError())
