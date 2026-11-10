@@ -75,7 +75,11 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   const agentOf = id => {
     if (!agents.has(id)) agents.set(id, {
       id, session: { id, requestHeader: () => undefined },
-      followup() { this.followed = (this.followed ?? 0) + 1 },
+      followup(message) {
+        this.followed = (this.followed ?? 0) + 1
+        this.followups ??= []
+        this.followups.push(message)
+      },
       cancel() { this.cancelled = true },
       inbox: { nextStep: [], nextTurn: [], remove: () => false },
       async whenIdle() {},

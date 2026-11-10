@@ -26,8 +26,8 @@ test('S1: a paired person update becomes a user message in the Bot session', asy
 test('S1: a question reaches Telegram and a paired person button answers it', async (t) => {
   const s = await startBridge(t)
   await s.question({ question: 'Which report?', options: [{ label: 'Daily' }, { label: 'Weekly' }] })
-  const card = await s.request('sendMessage', params => /Which report\?/.test(params.text))
-  const button = card.params.reply_markup.inline_keyboard.flat()[0]
+  const card = await s.request('sendRichMessage', params => /Which report\?/.test(params.rich_message.html))
+  const button = { callback_data: /data="([^"]+)"/.exec(card.params.rich_message.html)[1] }
   s.pushUpdate({ callback_query: { id: 'q1', from: { id: 9, first_name: 'Ann' }, data: button.callback_data, message: { message_id: 10, chat: { id: 5, type: 'private' } } } })
   await until(() => s.agents.get('a')?.followed === 1)
   await s.request('answerCallbackQuery', params => params.callback_query_id === 'q1')
@@ -38,8 +38,8 @@ test('S1: a Telegram approval button resolves the DSH request', async (t) => {
   const controller = new AbortController()
   t.after(() => controller.abort())
   const outcome = s.approval({ agent: s.agentOf('a'), toolName: 'bash', reason: 'Inspect the report', signal: controller.signal })
-  const card = await s.request('sendMessage', params => /Inspect the report/.test(params.text))
-  const button = card.params.reply_markup.inline_keyboard.flat().find(item => item.callback_data.endsWith(':allow'))
+  const card = await s.request('sendRichMessage', params => /Inspect the report/.test(params.rich_message.html))
+  const button = { callback_data: /data="([^"]+:allow)"/.exec(card.params.rich_message.html)[1] }
   s.pushUpdate({ callback_query: { id: 'a1', from: { id: 9, first_name: 'Ann' }, data: button.callback_data, message: { message_id: 11, chat: { id: 5, type: 'private' } } } })
   assert.deepEqual(await outcome, ['allowed-once'])
 })

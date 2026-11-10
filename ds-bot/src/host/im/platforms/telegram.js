@@ -1,12 +1,52 @@
 // Telegram Bot API adapter: getUpdates long polling in, sendMessage out. Parts of the
 // protocol mapping follow dsh-im (MIT, © 2026 xmanrui — see NOTICE).
 import { chunkTelegram } from '../format.js'
-import { chunkRich } from '../rich-format.js'
+import { chunkRich, RICH_LIMIT } from '../rich-format.js'
 import { retryDelay, retryWait } from './retry.js'
 
 const TEXT_LIMIT = 4096
 const POLL_TIMEOUT = 50
 const UPDATES = ['message', 'callback_query']
+const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const keyboard = buttons => ({ inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, ...(button.disabled ? { disabled: {} } : { callback_data: button.data }) }]) })
+const plainCard = card => ({
+  text: [card.text, card.details?.text, card.details?.code, card.settled ? `— ${card.settled.answer}` : undefined].filter(Boolean).join('\n'),
+  buttons: card.settled ? card.settled.options.map(option => ({ ...option, disabled: true })) : card.options,
+})
+const cardChunks = card => {
+  const options = card.settled === undefined ? (card.options ?? []) : card.settled.options
+  const rows = options.map(option => {
+    if (card.settled === undefined && (Buffer.byteLength(option.data) > 64 || option.data.length === 0)) throw Object.assign(new Error('Telegram card callback must be 1–64 bytes'), { permanent: true })
+    const action = card.settled === undefined ? `type="callback_data" data="${escape(option.data)}"` : 'type="disabled"'
+    return `<tg-button-row><tg-button ${action}${option.style ? ` style="${escape(option.style)}"` : ''}>${escape(option.label)}</tg-button></tg-button-row>`
+  }).join('\n')
+  const buttonSize = (card.options ?? []).reduce((size, option) => size + Array.from(option.label).length + 1, 0)
+  // Keep the same content chunks on settlement; reserve both labels and the answer footer.
+  const limit = Math.max(1, RICH_LIMIT - buttonSize * 2 - 32)
+  const chunks = chunkRich(card.text, limit)
+  const details = [
+    ...chunkRich(card.details?.text, limit),
+    ...Array.from(card.details?.code ?? '').reduce((parts, point, index) => {
+      if (index % limit === 0) parts.push('')
+      parts[parts.length - 1] += point
+      return parts
+    }, []).map(code => ({ html: `<pre><code>${escape(code)}</code></pre>`, size: Array.from(code).length })),
+  ]
+  for (const detail of details) {
+    const html = `<blockquote expandable>${detail.html}</blockquote>`
+    const last = chunks.at(-1)
+    if (last && last.size + detail.size + 1 <= limit) {
+      last.html += `\n${html}`
+      last.size += detail.size + 1
+    } else chunks.push({ html, size: detail.size })
+  }
+  if (rows) {
+    if (chunks.length === 0) chunks.push({ html: '', size: 0 })
+    chunks.at(-1).html += `\n${rows}`
+  }
+  if (card.settled) chunks.at(-1).html += `\n<p>— ${escape(card.settled.answer)}</p>`
+  return chunks
+}
 
 const reason = (error) => {
   const text = [error, error?.cause].map(part => String(part?.message ?? part ?? '')).filter(Boolean).join(': ')
@@ -217,7 +257,7 @@ export default {
       let messageId
       for (const [index, chunk] of chunks.entries()) {
         const markup = index === chunks.length - 1 && buttons?.length > 0
-          ? { reply_markup: { inline_keyboard: buttons.map(button => [{ text: button.label, callback_data: button.data }]) } }
+          ? { reply_markup: keyboard(buttons) }
           : {}
         const sendOne = async (body) => {
           try {
@@ -238,8 +278,32 @@ export default {
 
     return {
       send,
+      sendCard: async (chat, card) => {
+        let messageId
+        try {
+          for (const chunk of cardChunks(card)) {
+            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            messageId = sent?.message_id ?? messageId
+          }
+          return { messageId, cardFormat: 'rich' }
+        } catch (error) {
+          if (error.status !== 404 && !/method (?:not found|unknown)|unknown method/i.test(error.message)) {
+            env.log?.warn('ds-bot: Telegram rich card send failed: %s', reason(error))
+            throw error
+          }
+          return { ...await send(chat, plainCard(card)), cardFormat: 'text' }
+        }
+      },
+      editCard: async (chat, messageId, card, format) => {
+        if (format === 'text') {
+          const body = plainCard(card)
+          await call('editMessageText', { chat_id: chat.key, message_id: messageId, text: chunkTelegram(body.text, TEXT_LIMIT).at(-1)?.html ?? '', parse_mode: 'HTML', reply_markup: keyboard(body.buttons) })
+          return
+        }
+        await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: cardChunks(card).at(-1)?.html ?? '<p></p>' } })
+      },
       edit: async (chat, messageId, { text, buttons }) => {
-        const markup = { reply_markup: { inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, callback_data: button.data }]) } }
+        const markup = { reply_markup: keyboard(buttons) }
         if (richIds.has(identity(chat, messageId))) {
           const chunks = chunkRich(text)
           await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: chunks[0]?.html ?? '<p></p>' }, ...markup })

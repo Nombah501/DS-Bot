@@ -124,24 +124,36 @@ export function install(rt) {
   // Sent cards: cardKey → [{ chatKey, messageId, answer? }]. Persisted so a restart
   // does not send a card twice; an `answer` marks it settled from this side.
   const cardsOf = async (id) => (await runtimeOf(id)).data
-  const markCard = async (id, cardKey, chatKey, messageId, body) => {
+  const markCard = async (id, cardKey, chatKey, messageId, body, card, cardFormat) => {
     const data = await cardsOf(id)
     const entries = data.cards[cardKey] ?? []
     const held = entries.find(entry => entry.chatKey === chatKey)
     if (held !== undefined) {
       held.messageId = messageId ?? held.messageId
       held.text = body ?? held.text
+      held.card ??= card
+      held.cardFormat = cardFormat ?? held.cardFormat
     } else {
-      entries.push({ chatKey, messageId, text: body })
+      entries.push({ chatKey, messageId, text: body, ...(card === undefined ? {} : { card }) })
     }
     data.cards[cardKey] = entries
     scheduleWrite(id)
   }
-  const settleCard = async (id, cardKey, answer) => {
+  const settleCard = async (id, cardKey, answer, selected) => {
     const data = await cardsOf(id)
     const entries = data.cards[cardKey]
     if (entries === undefined) return
-    for (const entry of entries) entry.answer ??= typeof answer === 'function' ? answer(textFor(connections()[id], connections()[id]?.chats?.[entry.chatKey])) : answer
+    for (const entry of entries) {
+      if (entry.answer !== undefined) continue
+      entry.answer = typeof answer === 'function' ? answer(textFor(connections()[id], connections()[id]?.chats?.[entry.chatKey])) : answer
+      if (entry.card !== undefined) {
+        const labels = selected ?? [entry.answer]
+        entry.card.settled = {
+          answer: entry.answer,
+          options: entry.card.options.filter(option => labels.includes(option.label)).map(({ label, style }) => ({ label, ...(style ? { style } : {}) })),
+        }
+      }
+    }
     scheduleWrite(id)
   }
 
@@ -216,8 +228,10 @@ export function install(rt) {
     while (queue.jobs.length > 0) {
       const job = queue.jobs[0]
       try {
-        const sent = await runner.handle.send(job.chat, job)
-        job.after?.(sent)
+        const sent = job.card !== undefined && typeof runner.handle.sendCard === 'function'
+          ? await runner.handle.sendCard(job.chat, job.card)
+          : await runner.handle.send(job.chat, job)
+        await job.after?.(sent)
         queue.jobs.shift()
       } catch (error) {
         const how = failClass(error)
@@ -449,17 +463,18 @@ export function install(rt) {
     approval: (id, text) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
   }
 
-  const sendCard = async (conn, cardKey, targets, body, buttons) => {
+  const sendCard = async (conn, cardKey, targets, body, buttons, structured) => {
     for (const { chatKey, chat } of targets) {
       const text = textFor(conn, chat)
       const rendered = typeof body === 'function' ? body(text) : body
       const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
-      sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, rendered, renderedButtons, (sent) => {
-        void markCard(conn.id, cardKey, chatKey, sent?.messageId, rendered)
-      })
+      const card = imPlatform(conn.platform)?.richCards === true && typeof runners.get(conn.id)?.handle?.sendCard === 'function' ? structured?.(text) : undefined
+      await markCard(conn.id, cardKey, chatKey, undefined, rendered, card)
+      enqueue(conn, chatKey, { chat: { key: chatKey, kind: chat.kind, title: chat.title }, text: rendered, buttons: renderedButtons, card, after: async (sent) => {
+        await markCard(conn.id, cardKey, chatKey, sent?.messageId, rendered, card, sent?.cardFormat)
+        await settledEdits(conn)
+      } })
     }
-    // A card a chat never got (queued behind a failure) is still recorded below.
-    for (const { chatKey, chat } of targets) await markCard(conn.id, cardKey, chatKey, undefined, typeof body === 'function' ? body(textFor(conn, chat)) : body)
   }
 
   const diffCards = async () => {
@@ -476,7 +491,8 @@ export function install(rt) {
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
-        await sendCard(conn, cardKey, listeners(conn, { botId }), text => cardText.question(bot.name, question, text), buttons)
+        await sendCard(conn, cardKey, listeners(conn, { botId }), text => cardText.question(bot.name, question, text), buttons,
+          text => ({ text: cardText.question(bot.name, question, text), options: cardButtons.question(question) ?? [] }))
       }
       // Secret requests: text only — the key is typed on the computer or phone.
       for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
@@ -514,7 +530,14 @@ export function install(rt) {
         const text = textFor(conn, chat)
         entry.edited = true
         const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${text('answered')})`
-        runner.handle.edit({ key: entry.chatKey, kind: chat.kind, title: chat.title }, entry.messageId, { text: body }).catch(() => {})
+        const address = { key: entry.chatKey, kind: chat.kind, title: chat.title }
+        const editing = entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof runner.handle.editCard === 'function'
+          ? runner.handle.editCard(address, entry.messageId, entry.card, entry.cardFormat)
+          : runner.handle.edit(address, entry.messageId, { text: body })
+        await editing.catch(error => {
+          entry.edited = false
+          if (!error?.stopped) rt.warn('ds-bot: im settled card edit failed: %s', error)
+        })
         scheduleWrite(conn.id)
       }
     }
@@ -537,6 +560,7 @@ export function install(rt) {
         for (const entry of entries) {
           if (entry.answer === undefined) {
             entry.answer = textFor(conn, conn.chats?.[entry.chatKey])('answered')
+            if (entry.card !== undefined) entry.card.settled = { answer: entry.answer, options: [] }
             touched = true
           }
         }
@@ -943,7 +967,12 @@ export function install(rt) {
           const bot = rt.botOf(data.botId)
           const targets = data.roomId !== undefined ? listeners(conn, { roomId: data.roomId }) : listeners(conn, { botId: data.botId })
           const buttons = imPlatform(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
-          await sendCard(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons)
+          await sendCard(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
+            text => ({
+              text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),
+              details: data.detail,
+              options: cardButtons.approval(data.id, text).map((option, index) => ({ ...option, style: index === 0 ? 'success' : 'danger' })),
+            }))
         }
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
       return
@@ -980,6 +1009,15 @@ export function install(rt) {
 
   const imView = () => ({ connections: Object.values(connections()).map(viewOf), platforms: IM_PLATFORMS.filter(platform => adaptersFor().includes(platform.id)).map(platform => platform.id) })
   const imStatusView = () => Object.fromEntries([...statuses.entries()].map(([id, status]) => [id, { state: status.state, ...(status.error !== undefined ? { error: status.error } : {}), at: status.at }]))
+  const imQuestionAnswered = async (question, answer) => {
+    const selected = (answer?.selected ?? []).filter(label => question.options?.some(option => option.label === label))
+    const labels = question.multiSelect === true ? [...new Set(selected)] : selected.slice(0, 1)
+    for (const conn of Object.values(connections())) {
+      if (imPlatform(conn.platform)?.richCards !== true) continue
+      await settleCard(conn.id, `q:${question.id}`, labels.length ? labels.join(', ') : text => text('answered'), labels)
+      await settledEdits(conn)
+    }
+  }
 
-  Object.assign(rt, { imView, imStatusView, imViaView, imEndpoint })
+  Object.assign(rt, { imView, imStatusView, imViaView, imEndpoint, imQuestionAnswered })
 }

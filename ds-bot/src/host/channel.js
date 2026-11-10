@@ -744,6 +744,7 @@ export function install(rt) {
       state.questions[sessionId] ??= question
       throw error
     }
+    await rt.imQuestionAnswered?.(question, answer).catch(error => rt.warn('ds-bot: question answer notification failed: %s', error))
     await rt.save()
     return true
   }
