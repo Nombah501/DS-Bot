@@ -218,7 +218,8 @@ export function install(rt) {
     while (queue.jobs.length > 0) {
       const job = queue.jobs[0]
       try {
-        await runner.draftChats?.get(chatKey)?.sending
+        const draft = runner.draftChats.get(chatKey)?.sending
+        if (draft !== undefined) await draft
         const sent = await runner.handle.send(job.chat, job)
         job.after?.(sent)
         queue.jobs.shift()
