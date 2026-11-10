@@ -10,6 +10,7 @@ export const IM_PLATFORMS = [
     fields: [{ key: 'token', label: 'Bot token', secret: true }],
     buttons: true,
     groups: true,
+    richMessages: true,
     help: 'https://t.me/BotFather',
   },
   {

@@ -8,7 +8,7 @@ test('S1: a Bot step reaches the paired person through the real Telegram adapter
   s.assistantStream({ type: 'start', attemptId: 'a:1', revision: 1, turn: 1, step: 1 })
   s.assistantStream({ type: 'chunk', attemptId: 'a:1', revision: 2, index: 0, time: 1, chunk: { type: 'text-delta', index: 0, text: 'A completed Bot step' } })
   s.step('A completed Bot step')
-  const sent = await s.request('sendMessage', params => params.text === 'A completed Bot step')
+  const sent = await s.request('sendRichMessage', params => params.rich_message.html === '<p>A completed Bot step</p>')
   assert.equal(sent.params.chat_id, '5')
   s.assistantStream({ type: 'end', attemptId: 'a:1', revision: 3, index: 1, outcome: { kind: 'committed', eventType: 'assistant/message', seq: 1 } })
 })

@@ -36,6 +36,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     respond(res, { ok: true, result: updates.splice(0) })
   }
   const server = createServer((req, res) => {
+    req.setEncoding('utf8')
     let body = ''
     req.on('data', chunk => { body += chunk })
     req.on('end', () => {

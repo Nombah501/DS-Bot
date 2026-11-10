@@ -210,7 +210,7 @@ export function install(rt) {
     }
   }
   const sendText = (conn, chat, body, buttons, after) => enqueue(conn, chat.key, { chat, text: body, buttons, after })
-  const sendTo = (conn, chatKey, chat, body, buttons, after) => enqueue(conn, chatKey, { chat, text: body, buttons, after })
+  const sendTo = (conn, chatKey, chat, body, buttons, after, rich = false) => enqueue(conn, chatKey, { chat, text: body, buttons, after, ...(rich && imPlatform(conn.platform)?.richMessages === true ? { rich: true } : {}) })
 
   // ----------------------------------------------------------------- inbound
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
@@ -878,7 +878,7 @@ export function install(rt) {
       const body = item.kind === 'bot' ? item.text : viewCardText({ title: item.title, view: item.view }) || (item.title ?? '')
       for (const conn of Object.values(connections())) {
         if (!runners.has(conn.id)) continue
-        for (const { chatKey, chat } of listeners(conn, { botId })) sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, body)
+        for (const { chatKey, chat } of listeners(conn, { botId })) sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, body, undefined, undefined, item.kind === 'bot')
       }
     }
   })
@@ -888,7 +888,7 @@ export function install(rt) {
     const body = `**${line.who}**: ${line.text}`
     for (const conn of Object.values(connections())) {
       if (!runners.has(conn.id)) continue
-      for (const { chatKey, chat } of listeners(conn, { roomId: room.id })) sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, body)
+      for (const { chatKey, chat } of listeners(conn, { roomId: room.id })) sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, body, undefined, undefined, true)
     }
   })
 

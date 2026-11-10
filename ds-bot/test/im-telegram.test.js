@@ -238,3 +238,26 @@ test('a drop after getMe succeeds is retried, not reported as an error (#1119)',
   assert.ok(polls >= 2, 'a new long poll went out after the failure')
   assert.equal(statuses.filter(status => status.state === 'error').length, 0, 'a network drop is not shown as an error while it retries')
 })
+
+test('rich sends keep chat-scoped identity for edits and never degrade other errors', async t => {
+  const api = await fakeApi()
+  api.holdPoll = true
+  const warnings = []
+  const handle = telegram.connect({ token: 'TOKEN' }, { ...env(api.api), log: { warn: (...args) => warnings.push(args) } }, { onMessage() {}, onAction() {}, onStatus() {} })
+  t.after(() => { handle.stop(); api.close() })
+  api.replies.sendRichMessage = { result: { message_id: 42 } }
+  const chat = { key: '5', kind: 'direct' }
+  await handle.send(chat, { text: '**Rich**', rich: true })
+  await handle.edit(chat, 42, { text: '# Changed' })
+  const edited = api.calls.find(call => call.method === 'editMessageText')
+  assert.equal(edited.params.rich_message.html, '<h1>Changed</h1>')
+  assert.equal(edited.params.text, undefined)
+  await handle.edit({ key: '6', kind: 'direct' }, 42, { text: 'Plain' })
+  assert.equal(api.calls.filter(call => call.method === 'editMessageText')[1].params.text, 'Plain')
+  for (const error of [400, 403, 429, 500]) {
+    api.replies.sendRichMessage = { error, description: 'rich failure' }
+    await assert.rejects(handle.send(chat, { text: 'Never degrade', rich: true }), /rich failure/)
+  }
+  assert.equal(api.calls.some(call => call.method === 'sendMessage'), false)
+  assert.equal(warnings.length, 4)
+})

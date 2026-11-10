@@ -1,6 +1,7 @@
 // Telegram Bot API adapter: getUpdates long polling in, sendMessage out. Parts of the
 // protocol mapping follow dsh-im (MIT, © 2026 xmanrui — see NOTICE).
 import { chunkTelegram } from '../format.js'
+import { chunkRich } from '../rich-format.js'
 import { retryDelay, retryWait } from './retry.js'
 
 const TEXT_LIMIT = 4096
@@ -193,7 +194,25 @@ export default {
     }
     void poll()
 
-    const send = async (chat, { text, buttons }) => {
+    const richIds = new Set()
+    const identity = (chat, id) => JSON.stringify([chat.key, id])
+    const send = async (chat, { text, buttons, rich = false }) => {
+      if (rich) {
+        let messageId
+        try {
+          for (const chunk of chunkRich(text)) {
+            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            messageId = sent?.message_id ?? messageId
+            richIds.add(identity(chat, messageId))
+          }
+          return { messageId }
+        } catch (error) {
+          if (error.status !== 404 && !/method (?:not found|unknown)|unknown method/i.test(error.message)) {
+            env.log?.warn('ds-bot: Telegram rich send failed: %s', reason(error))
+            throw error
+          }
+        }
+      }
       const chunks = chunkTelegram(text, TEXT_LIMIT)
       let messageId
       for (const [index, chunk] of chunks.entries()) {
@@ -221,6 +240,15 @@ export default {
       send,
       edit: async (chat, messageId, { text, buttons }) => {
         const markup = { reply_markup: { inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, callback_data: button.data }]) } }
+        if (richIds.has(identity(chat, messageId))) {
+          const chunks = chunkRich(text)
+          await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: chunks[0]?.html ?? '<p></p>' }, ...markup })
+          for (const chunk of chunks.slice(1)) {
+            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            richIds.add(identity(chat, sent?.message_id))
+          }
+          return
+        }
         try {
           await call('editMessageText', { chat_id: chat.key, message_id: messageId, text: chunkTelegram(text, TEXT_LIMIT)[0]?.html ?? '', parse_mode: 'HTML', ...markup })
         } catch (error) {

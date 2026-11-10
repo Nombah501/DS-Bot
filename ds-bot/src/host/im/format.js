@@ -6,7 +6,7 @@ const escapeHtml = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&l
 
 // Inline Markdown inside one line or block: `code`, **bold**, _italic_, ~~strike~~,
 // [label](url). Code spans are pulled out first so markers inside them stay literal.
-function inlineHtml(line) {
+export function inlineHtml(line) {
   const spans = []
   const kept = line.replace(/`([^`]+)`/g, (_all, code) => {
     spans.push(`<code>${escapeHtml(code)}</code>`)
