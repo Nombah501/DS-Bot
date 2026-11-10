@@ -45,6 +45,8 @@ export function install(rt) {
         numbersMulti: 'ответьте номерами через пробел',
         allow: 'Разрешить один раз',
         reject: 'Отклонить',
+        done: 'Готово',
+        selectOne: 'Выберите хотя бы один вариант.',
       }[key] ?? key
     }
     const line = {
@@ -66,6 +68,8 @@ export function install(rt) {
       numbersMulti: zh() ? '回复编号，多选用空格隔开' : 'reply with the numbers, separated by spaces',
       allow: zh() ? '允许一次' : 'Allow once',
       reject: zh() ? '拒绝' : 'Reject',
+      done: zh() ? '完成' : 'Done',
+      selectOne: zh() ? '请至少选择一个选项。' : 'Select at least one option.',
     }[key]
     return line ?? key
   }
@@ -152,7 +156,7 @@ export function install(rt) {
         const labels = selected ?? [entry.answer]
         entry.card.settled = {
           answer: entry.answer,
-          options: entry.card.options.filter(option => labels.includes(option.label)).map(({ label, style }) => ({ label, ...(style ? { style } : {}) })),
+          options: entry.card.options.filter(option => option.submit !== true && labels.includes(option.label)).map(({ label, style }) => ({ label, ...(style ? { style } : {}) })),
         }
       }
     }
@@ -501,6 +505,32 @@ export function install(rt) {
     const cut = data.lastIndexOf(':')
     const cardKey = data.slice(0, cut)
     const choice = data.slice(cut + 1)
+    if (data.startsWith('m:') && cut > 2 && imPlatform(conn.platform)?.richCards === true) {
+      const key = `q:${cardKey.slice(2)}`
+      const held = openCard(conn, chat.key, key)
+      const found = questionById(cardKey.slice(2))
+      const handle = runners.get(conn.id)?.handle
+      if (found?.question.multiSelect !== true || held?.entry.card === undefined || typeof handle?.editCard !== 'function') {
+        await sendCardReply(conn, chat, text('stale'))
+        return
+      }
+      const { entry } = held
+      if (choice === 'done') {
+        const selected = entry.card.options.filter(option => option.checked === true).map(option => option.label)
+        if (selected.length === 0) {
+          await sendCardReply(conn, chat, text('selectOne'))
+          return
+        }
+        if (!(await answerQuestionCard(conn, chat, key, selected))) await sendCardReply(conn, chat, text('stale'))
+        return
+      }
+      const option = /^\d+$/.test(choice) ? entry.card.options[Number(choice)] : undefined
+      if (option?.checked === undefined || option.data !== data) return
+      option.checked = !option.checked
+      scheduleWrite(conn.id)
+      if (entry.messageId !== undefined) await handle.editCard(chat, entry.messageId, entry.card, entry.cardFormat)
+      return
+    }
     if (data.startsWith('q:') && cut > 2) {
       const found = questionById(cardKey.slice(2))
       const label = found?.question.options?.[Number(choice)]?.label
@@ -529,6 +559,10 @@ export function install(rt) {
   }
   const cardButtons = {
     question: (question) => (question.multiSelect === true ? undefined : (question.options ?? []).map((option, index) => ({ data: `q:${question.id}:${index}`, label: option.label }))),
+    multiSelect: (question, text) => [
+      ...(question.options ?? []).map((option, index) => ({ data: `m:${question.id}:${index}`, label: option.label, checked: false })),
+      { data: `m:${question.id}:done`, label: text('done'), submit: true },
+    ],
     approval: (id, text) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
   }
 
@@ -561,7 +595,7 @@ export function install(rt) {
         if (bot === undefined) continue
         const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
         await sendCard(conn, cardKey, listeners(conn, { botId }), text => cardText.question(bot.name, question, text), buttons,
-          text => ({ text: cardText.question(bot.name, question, text), options: cardButtons.question(question) ?? [] }))
+          text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
       }
       // Secret requests: text only — the key is typed on the computer or phone.
       for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
