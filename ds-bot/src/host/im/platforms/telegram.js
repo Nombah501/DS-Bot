@@ -6,7 +6,7 @@ import { retryDelay, retryWait } from './retry.js'
 
 const TEXT_LIMIT = 4096
 const POLL_TIMEOUT = 50
-const UPDATES = ['message', 'callback_query']
+const UPDATES = ['message', 'callback_query', 'stopped_message_generation']
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const keyboard = buttons => ({ inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, ...(button.disabled ? { disabled: {} } : { callback_data: button.data }) }]) })
 const plainCard = card => ({
@@ -154,6 +154,14 @@ export default {
     }
 
     const onUpdate = async (update) => {
+      if (update.stopped_message_generation !== undefined) {
+        const event = update.stopped_message_generation
+        await handlers.onStop?.({
+          chat: { key: String(event.chat?.id), kind: event.chat?.type === 'private' ? 'direct' : 'group', ...(event.message_thread_id === undefined ? {} : { threadId: event.message_thread_id }) },
+          draftId: event.draft_id,
+        })
+        return
+      }
       if (update.message !== undefined) {
         const message = update.message
         const chat = message.chat ?? {}
@@ -301,6 +309,17 @@ export default {
           return
         }
         await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: cardChunks(card).at(-1)?.html ?? '<p></p>' } })
+      },
+      draft: async (chat, { draftId, text }) => {
+        if (chat.kind !== 'direct') return
+        const chunks = chunkRich(text)
+        await call('sendRichMessageDraft', {
+          chat_id: Number(chat.key),
+          ...(chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }),
+          draft_id: draftId,
+          rich_message: { html: chunks.at(-1)?.html ?? '<p></p>' },
+          can_stop: true,
+        })
       },
       edit: async (chat, messageId, { text, buttons }) => {
         const markup = { reply_markup: keyboard(buttons) }

@@ -119,6 +119,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: live feed route',
     'route GET /api/bot/feed',
     'effect ds-bot: live feed',
+    'on agent/assistant-stream',
     'on session/event',
     'effect ds-bot: im',
     'effect ds-bot: api route',

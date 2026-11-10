@@ -12,6 +12,7 @@ export const IM_PLATFORMS = [
     groups: true,
     richMessages: true,
     richCards: true,
+    drafts: true,
     help: 'https://t.me/BotFather',
   },
   {
