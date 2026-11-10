@@ -14,10 +14,12 @@ const fakeAdapter = ({ buttons = true } = {}) => {
   const sent = []
   const edited = []
   const fails = []
+  const typed = []
   const adapter = {
     id: 'fake',
     sent,
     edited,
+    typed,
     handlers: null,
     async check(fields) {
       if (fields.token === 'bad-token') throw new Error('platform refused the token')
@@ -36,7 +38,7 @@ const fakeAdapter = ({ buttons = true } = {}) => {
           return { messageId: sent.length }
         },
         edit: async (chat, messageId, body) => { edited.push({ chat, messageId, ...body }) },
-        typing: async () => {},
+        typing: async (chat) => { typed.push(chat) },
         stop: () => { adapter.stopped = (adapter.stopped ?? 0) + 1 },
       }
     },
@@ -118,6 +120,28 @@ const gm = (s, senderId, text, { mentioned = true, chat = { key: 'g1', kind: 'gr
   chat, sender: { id: senderId, name: `User ${senderId}` }, text, mentioned, ...extra,
 })
 
+
+test('typing receives the chat key on every platform', async (t) => {
+  for (const platform of Object.keys(adapters)) {
+    await t.test(platform, async (t) => {
+      t.mock.timers.enable({ apis: ['setInterval'] })
+      const seed = TEAM()
+      seed.im = { connections: { im_typing: {
+        id: 'im_typing', platform, botId: 'a', settings: {}, secrets: {}, enabled: true,
+        paired: [{ id: 'u1', name: 'u1', at: 1 }], requests: [],
+        chats: { 'dm-u1': { kind: 'direct', title: 'u1', at: 1 } }, createdAt: 1,
+      } } }
+      const s = await start({ platform, seed })
+      t.after(s.stop)
+      for (let attempt = 0; s.fake.handlers === null && attempt < 300; attempt++) await s.flush()
+      assert.ok(s.fake.handlers, 'the adapter connected')
+      await s.flush()
+      s.rt.live.set(s.rt.chatOf('a'), { turn: 1 })
+      t.mock.timers.tick(4000)
+      assert.deepEqual(s.fake.typed, [{ key: 'dm-u1', kind: 'direct', title: 'u1' }])
+    })
+  }
+})
 test('two concurrent syncs start exactly one adapter', async (t) => {
   const s = await start()
   t.after(s.stop)

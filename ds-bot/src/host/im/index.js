@@ -22,7 +22,29 @@ export function install(rt) {
   const { ctx, state } = rt
   const imDir = join(rt.home, 'im')
   const zh = () => String(rt.uiLanguage?.() ?? '').startsWith('Chinese')
-  const text = (key, values = {}) => {
+  const text = (key, values = {}, languageCode) => {
+    if (String(languageCode ?? '').toLowerCase().startsWith('ru')) {
+      return {
+        requested: 'Запрос на подключение отправлен в DS Bot; разрешите его на компьютере в Настройки → IM.',
+        unbound: 'Этот IM-бот ещё не привязан к Bot; выберите его в DS Bot: Настройки → IM.',
+        unboundGroup: 'Эта группа ещё не привязана; выберите для неё группу или Bot в DS Bot: Настройки → IM.',
+        connected: `Подключено — теперь можно общаться с ${values.target}.`,
+        stopped: 'Остановлено.',
+        idle: 'Сейчас ничего не выполняется.',
+        stale: 'На эту карточку уже ответили.',
+        noFile: 'Этот файл нельзя отправить здесь; отправьте его на компьютере.',
+        greeting: `Здравствуйте, я ${values.name}.`,
+        question: `${values.bot} спрашивает: `,
+        approval: `${values.bot} запрашивает разрешение: `,
+        secretAsk: `${values.bot} нужен ключ ${values.name} — введите его на компьютере или в приложении на телефоне.`,
+        viewShow: `${values.bot} отправил карточку — ответьте на компьютере или в приложении на телефоне.`,
+        answered: 'отвечено',
+        numbers: 'ответьте номером',
+        numbersMulti: 'ответьте номерами через пробел',
+        allow: 'Разрешить один раз',
+        reject: 'Отклонить',
+      }[key] ?? key
+    }
     const line = {
       requested: zh() ? '已向 DS Bot 发出连接请求，请在电脑上的 DS Bot 设置 → IM 里允许。' : 'A connection request was sent to DS Bot; allow it in Settings → IM on the computer.',
       unbound: zh() ? '这个 IM 机器人还没绑定 Bot，请在 DS Bot 设置 → IM 里选一个。' : 'This IM bot is not bound to a Bot yet; pick one in DS Bot Settings → IM.',
@@ -45,6 +67,7 @@ export function install(rt) {
     }[key]
     return line ?? key
   }
+  const textFor = (conn, chat) => (key, values) => text(key, values, conn.platform === 'telegram' ? chat?.languageCode : undefined)
 
   // ---------------------------------------------------------------- runtime file
   const runtimes = new Map() // id → { data: {runtime, cards, open}, timer }
@@ -118,7 +141,7 @@ export function install(rt) {
     const data = await cardsOf(id)
     const entries = data.cards[cardKey]
     if (entries === undefined) return
-    for (const entry of entries) entry.answer ??= answer
+    for (const entry of entries) entry.answer ??= typeof answer === 'function' ? answer(textFor(connections()[id], connections()[id]?.chats?.[entry.chatKey])) : answer
     scheduleWrite(id)
   }
 
@@ -216,7 +239,7 @@ export function install(rt) {
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
   const requested = (conn, msg) => {
     if ((conn.requests ?? []).some(entry => entry.id === msg.sender.id)) return false
-    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, at: Date.now() }]
+    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, ...(conn.platform === 'telegram' ? { languageCode: msg.sender.languageCode } : {}), at: Date.now() }]
     return true
   }
 
@@ -246,6 +269,7 @@ export function install(rt) {
     return undefined
   }
   const answerQuestionCard = async (conn, chat, cardKey, labels) => {
+    const text = textFor(conn, chat)
     const held = openCard(conn, chat.key, cardKey)
     if (held === undefined) return false
     const found = questionById(held.cardKey.slice(2))
@@ -271,11 +295,12 @@ export function install(rt) {
     return true
   }
   const answerApprovalCard = async (conn, chat, cardKey, choice) => {
+    const text = textFor(conn, chat)
     const held = openCard(conn, chat.key, cardKey)
     if (held === undefined) return false
     try {
       rt.answerApproval(held.cardKey.slice(2), choice)
-      await settleCard(conn.id, held.cardKey, choice === 'allow' ? text('allow') : text('reject'))
+      await settleCard(conn.id, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
       await settledEdits(conn)
     } catch (error) {
       if (error?.code === 'bot/stale') {
@@ -302,6 +327,8 @@ export function install(rt) {
   }
 
   const onMessage = (conn) => async (msg) => {
+    const text = textFor(conn, msg.sender)
+    if (conn.platform === 'telegram') msg.chat.languageCode = msg.sender.languageCode
     if (!paired(conn, msg.sender.id)) {
       if (msg.chat.kind === 'group' && !msg.mentioned) return
       if (!requested(conn, msg)) return
@@ -317,6 +344,10 @@ export function install(rt) {
     }
     const body = String(msg.text ?? '').trim()
     const chat = conn.chats[msg.chat.key]
+    if (conn.platform === 'telegram' && chat.languageCode !== msg.sender.languageCode) {
+      chat.languageCode = msg.sender.languageCode
+      await rt.save()
+    }
     const target = resolveTarget(conn, chat)
     if (/^\/start(?:@\S+)?\s*$/.test(body)) {
       const name = target === undefined ? undefined : targetName(conn, target)
@@ -375,8 +406,13 @@ export function install(rt) {
 
   const onAction = (conn) => async (action) => {
     if (!paired(conn, action.sender.id)) return
+    const text = textFor(conn, action.sender)
+    if (conn.platform === 'telegram' && conn.chats?.[action.chat.key] !== undefined) {
+      conn.chats[action.chat.key].languageCode = action.sender.languageCode
+      await rt.save()
+    }
     const data = String(action.data ?? '')
-    const chat = { key: action.chat.key, kind: action.chat.kind, title: action.chat.title }
+    const chat = { key: action.chat.key, kind: action.chat.kind, title: action.chat.title, languageCode: action.sender.languageCode }
     // Button data is `<kind>:<id>:<choice>`; the id is everything between the
     // first and the last colon, so an id with a colon in it still parses.
     const cut = data.lastIndexOf(':')
@@ -401,26 +437,29 @@ export function install(rt) {
 
   // ------------------------------------------------------------------ cards
   const cardText = {
-    question: (bot, question) => {
+    question: (bot, question, text) => {
       const options = (question.options ?? []).map((option, index) => `${index + 1}. ${option.label}${option.description ? ` — ${option.description}` : ''}`).join('\n')
       const hint = question.multiSelect === true ? text('numbersMulti') : text('numbers')
       return `${text('question', { bot })}${question.question}${question.detail ? `\n${question.detail}` : ''}\n${options}\n(${hint})`
     },
-    approval: (bot, entry) => `${text('approval', { bot })}${entry.tool}${entry.reason ? ` — ${entry.reason}` : ''}${entry.detail?.text ? `\n${entry.detail.text}` : ''}${entry.detail?.code ? `\n${entry.detail.code}` : ''}`,
+    approval: (bot, entry, text) => `${text('approval', { bot })}${entry.tool}${entry.reason ? ` — ${entry.reason}` : ''}${entry.detail?.text ? `\n${entry.detail.text}` : ''}${entry.detail?.code ? `\n${entry.detail.code}` : ''}`,
   }
   const cardButtons = {
     question: (question) => (question.multiSelect === true ? undefined : (question.options ?? []).map((option, index) => ({ data: `q:${question.id}:${index}`, label: option.label }))),
-    approval: (id) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
+    approval: (id, text) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
   }
 
   const sendCard = async (conn, cardKey, targets, body, buttons) => {
     for (const { chatKey, chat } of targets) {
-      sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, body, buttons, (sent) => {
-        void markCard(conn.id, cardKey, chatKey, sent?.messageId, body)
+      const text = textFor(conn, chat)
+      const rendered = typeof body === 'function' ? body(text) : body
+      const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
+      sendTo(conn, chatKey, { key: chatKey, kind: chat.kind, title: chat.title }, rendered, renderedButtons, (sent) => {
+        void markCard(conn.id, cardKey, chatKey, sent?.messageId, rendered)
       })
     }
     // A card a chat never got (queued behind a failure) is still recorded below.
-    for (const { chatKey } of targets) await markCard(conn.id, cardKey, chatKey, undefined, body)
+    for (const { chatKey, chat } of targets) await markCard(conn.id, cardKey, chatKey, undefined, typeof body === 'function' ? body(textFor(conn, chat)) : body)
   }
 
   const diffCards = async () => {
@@ -437,7 +476,7 @@ export function install(rt) {
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
-        await sendCard(conn, cardKey, listeners(conn, { botId }), cardText.question(bot.name, question), buttons)
+        await sendCard(conn, cardKey, listeners(conn, { botId }), text => cardText.question(bot.name, question, text), buttons)
       }
       // Secret requests: text only — the key is typed on the computer or phone.
       for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
@@ -446,7 +485,7 @@ export function install(rt) {
         for (const request of list) {
           const cardKey = `s:${request.id}`
           if (request.status !== 'pending' || data.cards[cardKey] !== undefined) continue
-          await sendCard(conn, cardKey, listeners(conn, { botId }), text('secretAsk', { bot: bot.name, name: request.name }))
+          await sendCard(conn, cardKey, listeners(conn, { botId }), text => text('secretAsk', { bot: bot.name, name: request.name }))
         }
       }
       // Views awaiting a reply: text form only.
@@ -457,7 +496,7 @@ export function install(rt) {
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const form = viewCardText({ title: view.title, view: view.view })
-        await sendCard(conn, cardKey, listeners(conn, { botId }), `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
+        await sendCard(conn, cardKey, listeners(conn, { botId }), text => `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
       }
     }
   }
@@ -472,6 +511,7 @@ export function install(rt) {
         if (entry.answer === undefined || entry.messageId === undefined || entry.edited === true) continue
         const chat = conn.chats?.[entry.chatKey]
         if (chat === undefined) continue
+        const text = textFor(conn, chat)
         entry.edited = true
         const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${text('answered')})`
         runner.handle.edit({ key: entry.chatKey, kind: chat.kind, title: chat.title }, entry.messageId, { text: body }).catch(() => {})
@@ -496,7 +536,7 @@ export function install(rt) {
         if (openCard(cardKey)) continue
         for (const entry of entries) {
           if (entry.answer === undefined) {
-            entry.answer = text('answered')
+            entry.answer = textFor(conn, conn.chats?.[entry.chatKey])('answered')
             touched = true
           }
         }
@@ -577,8 +617,8 @@ export function install(rt) {
       for (const chatKey of runner.queues.keys()) void drain(conn, chatKey)
       if (typeof runner.handle?.typing === 'function') {
         runner.typing = setInterval(() => {
-          for (const { chat, target } of targetsOf(fresh(conn.id) ?? conn)) {
-            if (target !== undefined && busyOf(target)) void runner.handle.typing({ key: chat.key ?? chat, kind: chat.kind, title: chat.title }).catch?.(() => {})
+          for (const { chatKey, chat, target } of targetsOf(fresh(conn.id) ?? conn)) {
+            if (target !== undefined && busyOf(target)) void runner.handle.typing({ key: chatKey, kind: chat.kind, title: chat.title }).catch?.(() => {})
           }
         }, TYPING_MS)
         runner.typing.unref?.()
@@ -755,8 +795,10 @@ export function install(rt) {
         conn.paired = [...(conn.paired ?? []), { id: request.id, name: request.name, at: Date.now() }]
         conn.chats ??= {}
         conn.chats[request.chatKey] ??= { kind: request.chatKind, title: request.name, at: Date.now() }
+        if (conn.platform === 'telegram') conn.chats[request.chatKey].languageCode = request.languageCode
         await rt.save()
         const chat = conn.chats[request.chatKey]
+        const text = textFor(conn, chat)
         const target = resolveTarget(conn, chat)
         const name = target === undefined ? undefined : targetName(conn, target)
         await sendTo(conn, request.chatKey, { key: request.chatKey, kind: request.chatKind, title: chat.title },
@@ -900,15 +942,15 @@ export function install(rt) {
           if (runner === undefined) continue
           const bot = rt.botOf(data.botId)
           const targets = data.roomId !== undefined ? listeners(conn, { roomId: data.roomId }) : listeners(conn, { botId: data.botId })
-          const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.approval(data.id) : undefined
-          await sendCard(conn, `a:${data.id}`, targets, cardText.approval(bot?.name ?? '?', data), buttons)
+          const buttons = imPlatform(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
+          await sendCard(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons)
         }
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
       return
     }
     void (async () => {
       for (const conn of Object.values(connections())) {
-        await settleCard(conn.id, `a:${data.id}`, data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
+        await settleCard(conn.id, `a:${data.id}`, text => data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
         await settledEdits(conn)
       }
     })().catch(() => {})
