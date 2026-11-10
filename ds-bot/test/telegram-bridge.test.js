@@ -43,3 +43,12 @@ test('S1: a Telegram approval button resolves the DSH request', async (t) => {
   s.pushUpdate({ callback_query: { id: 'a1', from: { id: 9, first_name: 'Ann' }, data: button.callback_data, message: { message_id: 11, chat: { id: 5, type: 'private' } } } })
   assert.deepEqual(await outcome, ['allowed-once'])
 })
+
+test('S1: a working Bot sends Telegram typing with the chat identifier', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const s = await startBridge(t)
+  s.rt.live.set(s.rt.chatOf('a'), { turn: 1 })
+  t.mock.timers.tick(4000)
+  const action = await s.request('sendChatAction')
+  assert.deepEqual(action.params, { chat_id: '5', action: 'typing' })
+})
