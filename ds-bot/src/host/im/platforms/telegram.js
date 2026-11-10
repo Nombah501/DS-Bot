@@ -8,19 +8,20 @@ const TEXT_LIMIT = 4096
 const POLL_TIMEOUT = 50
 const UPDATES = ['message', 'callback_query', 'stopped_message_generation']
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const optionLabel = option => option.checked === undefined ? option.label : `${option.checked ? '☑' : '☐'} ${option.label}`
 const keyboard = buttons => ({ inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, ...(button.disabled ? { disabled: {} } : { callback_data: button.data }) }]) })
 const plainCard = card => ({
   text: [card.text, card.details?.text, card.details?.code, card.settled ? `— ${card.settled.answer}` : undefined].filter(Boolean).join('\n'),
-  buttons: card.settled ? card.settled.options.map(option => ({ ...option, disabled: true })) : card.options,
+  buttons: card.settled ? card.settled.options.map(option => ({ ...option, disabled: true })) : (card.options ?? []).map(option => ({ ...option, label: optionLabel(option) })),
 })
 const cardChunks = card => {
   const options = card.settled === undefined ? (card.options ?? []) : card.settled.options
   const rows = options.map(option => {
     if (card.settled === undefined && (Buffer.byteLength(option.data) > 64 || option.data.length === 0)) throw Object.assign(new Error('Telegram card callback must be 1–64 bytes'), { permanent: true })
     const action = card.settled === undefined ? `type="callback_data" data="${escape(option.data)}"` : 'type="disabled"'
-    return `<tg-button-row><tg-button ${action}${option.style ? ` style="${escape(option.style)}"` : ''}>${escape(option.label)}</tg-button></tg-button-row>`
+    return `<tg-button-row><tg-button ${action}${option.style ? ` style="${escape(option.style)}"` : ''}>${escape(optionLabel(option))}</tg-button></tg-button-row>`
   }).join('\n')
-  const buttonSize = (card.options ?? []).reduce((size, option) => size + Array.from(option.label).length + 1, 0)
+  const buttonSize = (card.options ?? []).reduce((size, option) => size + Array.from(optionLabel(option)).length + 1, 0)
   // Keep the same content chunks on settlement; reserve both labels and the answer footer.
   const limit = Math.max(1, RICH_LIMIT - buttonSize * 2 - 32)
   const chunks = chunkRich(card.text, limit)
