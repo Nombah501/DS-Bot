@@ -8,12 +8,12 @@ import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
 export async function until(read, timeout = 3000) {
-  const deadline = Date.now() + timeout
+  const deadline = performance.now() + timeout
   do {
     const value = await read()
     if (value !== undefined && value !== false) return value
     await delay(10)
-  } while (Date.now() < deadline)
+  } while (performance.now() < deadline)
   throw new Error('Timed out waiting for Bridge boundary output')
 }
 
@@ -69,7 +69,6 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     bots: { a: { id: 'a', name: 'Chief', role: 'Boss', sessionId: 'a', createdAt: 1 } },
     rooms: {}, agents: {}, exchanges: [], exchangeTurns: {}, questions: {}, prefs: {}, revision: 0,
   }))
-  ctx = fakeContext()
   const prompts = []
   const agents = new Map()
   const agentOf = id => {
@@ -86,7 +85,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     })
     return agents.get(id)
   }
-  Object.assign(ctx, {
+  const context = () => Object.assign(fakeContext(), {
     llm: { listProviders: () => [] },
     workspaceRegistry: { get: () => undefined, resolveByPath: async () => undefined, create: async () => ({ id: 'w1' }), archiveSession: async () => {} },
     sessionController: {
@@ -95,7 +94,8 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     },
     sessions: { flush: async () => {} },
   })
-  const rt = createRuntime(ctx, { home, im: { telegram: { api: `http://127.0.0.1:${server.address().port}` } } })
+  const boot = () => createRuntime(ctx = context(), { home, im: { telegram: { api: `http://127.0.0.1:${server.address().port}` } } })
+  let rt = boot()
   const request = (method, predicate = () => true, after = 0) => until(() => calls.slice(after).find(call => call.method === method && predicate(call.params)))
   const pushUpdate = update => {
     updates.push({ update_id: ++updateId, ...update })
@@ -120,7 +120,13 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     await request('sendMessage', params => /talk to Chief/.test(params.text))
   }
   return {
-    ctx, rt, home, calls, replies, prompts, agents, agentOf, connection, request, pushUpdate, message, sessionEvent,
+    get ctx() { return ctx }, get rt() { return rt }, home, calls, replies, prompts, agents, agentOf, connection, request, pushUpdate, message, sessionEvent,
+    restart: async () => {
+      await ctx.dispose()
+      rt = boot()
+      await rt.load()
+      await rt.imEndpoint('im-retry', { id: connection.id })
+    },
     step: (text, data = {}, sessionId = 'a') => sessionEvent('assistant/message', { message: { content: [{ type: 'text', text }] }, ...data }, sessionId),
     assistantStream: (frame, sessionId = 'a') => ctx.emit('agent/assistant-stream', { agent: agentOf(sessionId), frame }),
     approval: (request, next = () => new Promise(() => {})) => Promise.all((ctx.listeners.get('approval/request') ?? []).map(listener => listener(request, next))),

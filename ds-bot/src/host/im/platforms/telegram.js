@@ -176,7 +176,7 @@ export default {
         )
         const { images, files } = await fileBlocks(message)
         await handlers.onMessage({
-          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from) },
+          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           text: kind === 'group' ? strip(raw) : raw,
           images,
@@ -193,10 +193,13 @@ export default {
         const from = query.from ?? {}
         await call('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {})
         await handlers.onAction({
-          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from) },
+          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           data: String(query.data ?? ''),
           messageId: message.message_id,
+          callbackQueryId: query.id,
+          ephemeralMessageId: message.ephemeral_message_id,
+          receiverUserId: message.receiver_user?.id === undefined ? undefined : String(message.receiver_user.id),
         })
       }
     }
@@ -290,7 +293,7 @@ export default {
         let messageId
         try {
           for (const chunk of cardChunks(card)) {
-            const sent = await call('sendRichMessage', { chat_id: chat.key, rich_message: { html: chunk.html } })
+            const sent = await call('sendRichMessage', { chat_id: chat.key, ...(chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }), rich_message: { html: chunk.html } })
             messageId = sent?.message_id ?? messageId
           }
           return { messageId, cardFormat: 'rich' }
@@ -309,6 +312,29 @@ export default {
           return
         }
         await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: cardChunks(card).at(-1)?.html ?? '<p></p>' } })
+      },
+      sendPrivateCard: async (chat, receiverUserId, card) => {
+        const ephemeralMessageIds = []
+        for (const chunk of cardChunks(card)) {
+          const sent = await call('sendRichMessage', {
+            chat_id: chat.key,
+            ...(chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }),
+            ephemeral_message_parameters: { receiver_user_id: Number(receiverUserId) },
+            rich_message: { html: chunk.html },
+          })
+          if (!Number.isSafeInteger(sent?.ephemeral_message_id)) throw Object.assign(new Error('Telegram did not return a Private card identity'), { permanent: true })
+          ephemeralMessageIds.push(sent.ephemeral_message_id)
+        }
+        return { ephemeralMessageId: ephemeralMessageIds.at(-1), ephemeralMessageIds, cardFormat: 'rich' }
+      },
+      editPrivateCard: (chat, copy, card) => call('editEphemeralMessageText', {
+        chat_id: chat.key, receiver_user_id: Number(copy.receiverUserId), ephemeral_message_id: copy.ephemeralMessageId,
+        rich_message: { html: cardChunks(card).at(-1)?.html ?? '<p></p>' },
+      }),
+      deletePrivateCard: async (chat, copy) => {
+        for (const id of copy.ephemeralMessageIds ?? [copy.ephemeralMessageId]) {
+          await call('deleteEphemeralMessage', { chat_id: chat.key, receiver_user_id: Number(copy.receiverUserId), ephemeral_message_id: id })
+        }
       },
       draft: async (chat, { draftId, text }) => {
         if (chat.kind !== 'direct') return

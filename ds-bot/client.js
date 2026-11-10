@@ -13573,6 +13573,7 @@ var IM_PLATFORMS = [
     richMessages: true,
     richCards: true,
     drafts: true,
+    privateCards: true,
     help: "https://t.me/BotFather"
   },
   {
