@@ -128,7 +128,7 @@ export default {
         const { images, files } = await fileBlocks(message)
         await handlers.onMessage({
           chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from) },
-          sender: { id: String(from.id ?? ''), name: nameOf(from), languageCode: from.language_code },
+          sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           text: kind === 'group' ? strip(raw) : raw,
           images,
           files,
@@ -145,7 +145,7 @@ export default {
         await call('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {})
         await handlers.onAction({
           chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from) },
-          sender: { id: String(from.id ?? ''), name: nameOf(from), languageCode: from.language_code },
+          sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           data: String(query.data ?? ''),
           messageId: message.message_id,
         })
