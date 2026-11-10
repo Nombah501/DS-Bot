@@ -10,6 +10,7 @@ import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
 import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, topicTarget } from './topics.js'
+import { statusData, statusPanels } from './status-panel.js'
 
 const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
@@ -23,6 +24,7 @@ const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase
 
 export function install(rt) {
   const { ctx, state } = rt
+  const statusSteps = new Map()
   const imDir = join(rt.home, 'im')
   const zh = () => String(rt.uiLanguage?.() ?? '').startsWith('Chinese')
   const text = (key, values = {}, languageCode) => {
@@ -35,6 +37,15 @@ export function install(rt) {
         stopped: 'Остановлено.',
         idle: 'Сейчас ничего не выполняется.',
         working: 'Работает',
+        statusPanel: 'Панель состояния',
+        statusIdle: 'Свободен',
+        statusWaiting: 'Ждёт ответа на карточку',
+        statusTool: 'Инструмент',
+        statusStep: 'Шаг',
+        statusElapsed: 'Время хода',
+        statusSending: 'Останавливаем…',
+        statusFailed: 'Не удалось отправить. Повторите попытку.',
+        stop: 'Остановить',
         paired: 'Подключено — выберите Topic нужного Bot или группы.',
         denied: 'Этот Bot или группа не входят в ваш список доступа.',
         topicDeleted: `Topic закрыта: ${values.name} удалён.`,
@@ -64,6 +75,15 @@ export function install(rt) {
       stopped: zh() ? '已停下。' : 'Stopped.',
       idle: zh() ? '现在没有在做的活。' : 'Nothing is running.',
       working: zh() ? '进行中' : 'Working',
+      statusPanel: zh() ? '状态面板' : 'Status panel',
+      statusIdle: zh() ? '空闲' : 'Idle',
+      statusWaiting: zh() ? '等待卡片回复' : 'Waiting for a Card',
+      statusTool: zh() ? '工具' : 'Tool',
+      statusStep: zh() ? '步骤' : 'Step',
+      statusElapsed: zh() ? '本轮用时' : 'Turn elapsed',
+      statusSending: zh() ? '正在停止…' : 'Stopping…',
+      statusFailed: zh() ? '未发送，请重试。' : 'Not sent. Try again.',
+      stop: zh() ? '停止' : 'Stop',
       paired: 'Connected — choose a Topic for the Bot or group.',
       denied: 'This Bot or group is not on your Access list.',
       topicDeleted: zh() ? `话题已关闭：${values.name} 已删除。` : `Topic closed: ${values.name} was deleted.`,
@@ -103,6 +123,7 @@ export function install(rt) {
         cards: data?.cards !== null && typeof data?.cards === 'object' ? data.cards : {},
         requests: data?.requests ?? {},
         turns: data?.turns ?? {},
+        panels: Array.isArray(data?.panels) ? data.panels : [],
       },
       timer: undefined,
     }
@@ -235,6 +256,12 @@ export function install(rt) {
     for (const entries of Object.values(data.cards)) {
       for (const entry of entries) {
         if (entry.chatKey === chat.key && entry.threadId === oldThreadId && entry.messageId === undefined && entry.ephemeralMessageId === undefined) entry.threadId = threadId
+      }
+    }
+    for (const panel of data.panels) {
+      if (panel.chat.key === chat.key && panel.chat.threadId === oldThreadId) {
+        panel.chat.threadId = threadId
+        delete panel.messageId
       }
     }
     scheduleWrite(conn.id)
@@ -441,6 +468,13 @@ export function install(rt) {
       return
     }
   }
+  const onWidgetQuery = conn => async action => {
+    if (imPlatform(conn.platform)?.statusPanel !== true || action.chat.kind !== 'direct'
+      || action.type !== 'data' || action.data !== 'stop' || !paired(conn, action.sender.id)) return
+    const record = runners.get(conn.id)?.panels?.find(action.chat.key, action.messageId)
+    if (record === undefined || !allows(conn.paired?.find(person => person.id === action.sender.id), record.target)) return
+    await stopTarget(conn, { ...record.chat, languageCode: action.sender.languageCode }, record.target)
+  }
 
   // One card this chat was sent and has not answered yet. A button names its own
   // card, so it must never fall through to a newer card of the same kind.
@@ -569,7 +603,15 @@ export function install(rt) {
       if (target === undefined) {
         await sendText(conn, msg.chat, text(msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'))
       } else {
-        sendTo(conn, msg.chat.key, msg.chat, `${targetName(conn, target)} — ${text(busyOf(target) ? 'working' : 'idle')}`, undefined, undefined, true)
+        const panels = runners.get(conn.id)?.panels
+        if (panels !== undefined && msg.chat.kind === 'direct') {
+          await panels.show(msg.chat, target, text)
+        } else if (imPlatform(conn.platform)?.statusPanel === true) {
+          const data = statusData(rt, target, text, statusSteps)
+          sendTo(conn, msg.chat.key, msg.chat, `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`, undefined, undefined, true)
+        } else {
+          sendTo(conn, msg.chat.key, msg.chat, `${targetName(conn, target)} — ${text(busyOf(target) ? 'working' : 'idle')}`, undefined, undefined, true)
+        }
       }
       return
     }
@@ -926,6 +968,10 @@ export function install(rt) {
           const current = fresh(conn.id)
           return current === undefined ? undefined : onStop(current)(event).catch(error => rt.warn('ds-bot: im stop failed: %s', error))
         },
+        onWidgetQuery: action => {
+          const current = fresh(conn.id)
+          return current === undefined ? undefined : onWidgetQuery(current)(action).catch(error => rt.warn('ds-bot: widget query failed: %s', error))
+        },
         onStatus: onStatus(conn.id),
       })
       // A stop() during connect took the slot back: undo the just-started
@@ -935,6 +981,21 @@ export function install(rt) {
         return
       }
       runner.handle = handle
+      if (platform?.statusPanel === true && typeof handle.sendStatusPanel === 'function' && typeof handle.editStatusPanel === 'function') {
+        runner.panels = statusPanels(handle, {
+          records: (await runtimeOf(conn.id)).data.panels,
+          snapshot: record => statusData(rt, record.target, textFor(fresh(conn.id) ?? conn, record.chat), statusSteps),
+          valid: record => {
+            const current = fresh(conn.id)
+            return current !== undefined && canDeliver(current, record.chat, record.target)
+              && (record.target.botId !== undefined ? rt.botOf(record.target.botId) : rt.roomOf(record.target.roomId)) !== undefined
+          },
+          save: () => scheduleWrite(conn.id),
+          recover: chat => recoverTopic(fresh(conn.id) ?? conn, chat),
+          textOf: record => textFor(fresh(conn.id) ?? conn, record.chat),
+          warn: error => rt.warn('ds-bot: Status panel update failed: %s', rt.redactSecrets(String(error?.message ?? error))),
+        })
+      }
       for (const chatKey of runner.queues.keys()) void drain(conn, chatKey)
       if (platform?.topics === true) {
         for (const chatKey of Object.keys(conn.chats ?? {})) await ensurePrivateTopics(conn, chatKey)
@@ -965,6 +1026,7 @@ export function install(rt) {
     runners.delete(id)
     if (runner?.typing !== undefined) clearInterval(runner.typing)
     clearInterval(runner?.privateTimer)
+    runner?.panels?.stop()
     for (const queue of runner?.queues.values() ?? []) clearTimeout(queue.retry)
     for (const held of runner?.draftChats.values() ?? []) clearTimeout(held.timer)
     await Promise.resolve(runner?.handle?.stop?.()).catch(() => {})
@@ -1299,6 +1361,8 @@ export function install(rt) {
     }
   })
   ctx.on('session/event', (session, event) => {
+    if (event.type === 'step/start' && Number.isSafeInteger(event.data?.step)) statusSteps.set(session.id, event.data.step)
+    if (event.type === 'turn/start' || event.type === 'turn/end') statusSteps.delete(session.id)
     const initiatorRpcId = event.type === 'user/message' ? event.data?.source?.rpcId : undefined
     const request = initiatorRpcId === undefined ? undefined : [...runtimes.entries()]
       .filter(([id]) => connections()[id] !== undefined).map(([, held]) => held.data.requests[initiatorRpcId]).find(Boolean)

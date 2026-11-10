@@ -134,7 +134,38 @@ test('S1: unrelated permanent send errors never create replacement Topics', asyn
   s.step('Invalid rich output', {}, 'b')
   await s.request('sendRichMessage', p => /Invalid rich output/.test(p.rich_message.html), after)
   // A subsequent response on this same queue is the observable completion barrier.
-  s.message('/status', { message_thread_id: 102 })
-  await s.request('sendRichMessage', p => p.message_thread_id === 102 && /Writer/.test(p.rich_message.html), after)
+  s.message('/stop', { message_thread_id: 102 })
+  await s.request('sendMessage', p => p.message_thread_id === 102 && /Nothing is running/.test(p.text), after)
   assert.equal(s.calls.slice(after).some(call => call.method === 'createForumTopic'), false)
+})
+
+test('S1: a Status panel sent to a deleted Topic recovers, pins and stops its original Bot', async t => {
+  const s = await setup(t)
+  s.replies.sendWidget = params => params.message_thread_id === 102
+    ? { ok: false, error_code: 400, description: 'Bad Request: message thread not found' }
+    : { ok: true, result: { message_id: 601 } }
+  const after = s.calls.length
+  s.message('/status', { message_thread_id: 102 })
+  const widget = await s.request('sendWidget', p => p.message_thread_id === 104, after)
+  assert.equal(JSON.parse(widget.params.chat_data).name, 'Writer')
+  await s.request('pinChatMessage', p => p.message_id === 601, after)
+  s.pushUpdate({ widget_query: { id: 'recovered-panel', from: { id: 9, first_name: 'Ann' }, chat: { id: 5, type: 'private' }, message_id: 601, type: { type: 'data' }, data: 'stop' } })
+  await s.request('sendMessage', p => p.message_thread_id === 104 && /Nothing is running/.test(p.text), after)
+})
+
+test('S1: an existing Status panel is replaced after Step delivery recovers its deleted Topic', async t => {
+  const s = await setup(t)
+  s.message('/status', { message_thread_id: 102 })
+  await s.request('pinChatMessage')
+  s.replies.sendRichMessage = params => params.message_thread_id === 102
+    ? { ok: false, error_code: 400, description: 'Bad Request: message thread not found' }
+    : { ok: true, result: { message_id: 602 } }
+  const after = s.calls.length
+  s.step('Recover panel Topic', {}, 'b')
+  await s.request('sendRichMessage', p => p.message_thread_id === 104, after)
+  const widget = await s.request('sendWidget', p => p.message_thread_id === 104, after)
+  assert.equal(JSON.parse(widget.params.chat_data).name, 'Writer')
+  const pin = await s.request('pinChatMessage', () => true, after)
+  s.pushUpdate({ widget_query: { id: 'moved-panel', from: { id: 9 }, chat: { id: 5, type: 'private' }, message_id: pin.params.message_id, type: { type: 'data' }, data: 'stop' } })
+  await s.request('sendMessage', p => p.message_thread_id === 104 && /Nothing is running/.test(p.text), after)
 })
