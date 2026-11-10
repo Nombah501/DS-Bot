@@ -175,6 +175,7 @@ var ZH = {
   "Choose all Bots and groups or an Access list of existing Bots and groups": "请选择所有 Bot 和群聊或现有 Bot 和群聊的访问列表",
   "This platform has no Access lists": "此平台没有访问列表",
   "No such paired person": "找不到这个已配对用户",
+  "Telegram did not return a Topic ID": "Telegram 没有返回主题 ID",
   "Bound to": "绑定到",
   "Not bound": "未绑定",
   Direct: "私聊",
@@ -1708,7 +1709,8 @@ var RU = {
   "Selected: {count}": "Выбрано: {count}",
   "Choose all Bots and groups or an Access list of existing Bots and groups": "Выберите все Bots и группы или список существующих Bots и групп",
   "This platform has no Access lists": "На этой платформе нет списков доступа",
-  "No such paired person": "Этот пользователь не подключён"
+  "No such paired person": "Этот пользователь не подключён",
+  "Telegram did not return a Topic ID": "Telegram не вернул идентификатор Topic"
 };
 var fill = (text, params) => params ? text.replace(/\{(\w+)\}/g, (match, name) => name in params ? String(params[name]) : match) : text;
 var service = null;
@@ -13594,6 +13596,7 @@ var IM_PLATFORMS = [
     richCards: true,
     drafts: true,
     topics: true,
+    privateCards: true,
     help: "https://t.me/BotFather"
   },
   {

@@ -38,6 +38,7 @@ export function install(rt) {
         paired: 'Подключено — выберите Topic нужного Bot или группы.',
         denied: 'Этот Bot или группа не входят в ваш список доступа.',
         stale: 'На эту карточку уже ответили.',
+        privateOnly: 'Только инициатор может ответить на эту карточку.',
         noFile: 'Этот файл нельзя отправить здесь; отправьте его на компьютере.',
         greeting: `Здравствуйте, я ${values.name}.`,
         question: `${values.bot} спрашивает: `,
@@ -49,6 +50,8 @@ export function install(rt) {
         numbersMulti: 'ответьте номерами через пробел',
         allow: 'Разрешить один раз',
         reject: 'Отклонить',
+        done: 'Готово',
+        selectOne: 'Выберите хотя бы один вариант.',
       }[key] ?? key
     }
     const line = {
@@ -62,6 +65,7 @@ export function install(rt) {
       paired: 'Connected — choose a Topic for the Bot or group.',
       denied: 'This Bot or group is not on your Access list.',
       stale: zh() ? '这张卡已经答过了。' : 'This card was already answered.',
+      privateOnly: zh() ? '只有发起人可以回答这张卡。' : 'Only the Initiator can answer this card.',
       noFile: zh() ? '这个文件发不过去，请在电脑上发。' : 'This file cannot be sent here; send it on the computer.',
       greeting: zh() ? `你好，我是 ${values.name}。` : `Hello, I am ${values.name}.`,
       question: zh() ? `${values.bot} 问你：` : `${values.bot} asks: `,
@@ -73,6 +77,8 @@ export function install(rt) {
       numbersMulti: zh() ? '回复编号，多选用空格隔开' : 'reply with the numbers, separated by spaces',
       allow: zh() ? '允许一次' : 'Allow once',
       reject: zh() ? '拒绝' : 'Reject',
+      done: zh() ? '完成' : 'Done',
+      selectOne: zh() ? '请至少选择一个选项。' : 'Select at least one option.',
     }[key]
     return line ?? key
   }
@@ -91,6 +97,8 @@ export function install(rt) {
       data: {
         runtime: data?.runtime !== null && typeof data?.runtime === 'object' ? data.runtime : {},
         cards: data?.cards !== null && typeof data?.cards === 'object' ? data.cards : {},
+        requests: data?.requests ?? {},
+        turns: data?.turns ?? {},
       },
       timer: undefined,
     }
@@ -133,17 +141,18 @@ export function install(rt) {
   // Sent cards: cardKey → [{ chatKey, messageId, answer? }]. Persisted so a restart
   // does not send a card twice; an `answer` marks it settled from this side.
   const cardsOf = async (id) => (await runtimeOf(id)).data
-  const markCard = async (id, cardKey, chat, messageId, body, card, cardFormat) => {
+  const markCard = async (id, cardKey, chat, messageId, body, card, cardFormat, copy = {}) => {
     const data = await cardsOf(id)
     const entries = data.cards[cardKey] ?? []
-    const held = entries.find(entry => entry.chatKey === chat.key && entry.threadId === chat.threadId)
+    const held = entries.find(entry => entry.chatKey === chat.key && entry.threadId === chat.threadId && entry.receiverUserId === copy.receiverUserId)
     if (held !== undefined) {
       held.messageId = messageId ?? held.messageId
       held.text = body ?? held.text
       held.card ??= card
       held.cardFormat = cardFormat ?? held.cardFormat
+      Object.assign(held, copy)
     } else {
-      entries.push({ chatKey: chat.key, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }), messageId, text: body, ...(card === undefined ? {} : { card }) })
+      entries.push({ chatKey: chat.key, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }), messageId, text: body, ...(card === undefined ? {} : { card }), ...copy })
     }
     data.cards[cardKey] = entries
     scheduleWrite(id)
@@ -154,12 +163,12 @@ export function install(rt) {
     if (entries === undefined) return
     for (const entry of entries) {
       if (entry.answer !== undefined) continue
-      entry.answer = typeof answer === 'function' ? answer(textFor(connections()[id], connections()[id]?.chats?.[entry.chatKey])) : answer
+      entry.answer = typeof answer === 'function' ? answer(textFor(connections()[id], entry.receiverUserId === undefined ? connections()[id]?.chats?.[entry.chatKey] : entry)) : answer
       if (entry.card !== undefined) {
         const labels = selected ?? [entry.answer]
         entry.card.settled = {
           answer: entry.answer,
-          options: entry.card.options.filter(option => labels.includes(option.label)).map(({ label, style }) => ({ label, ...(style ? { style } : {}) })),
+          options: entry.card.options.filter(option => option.submit !== true && labels.includes(option.label)).map(({ label, style }) => ({ label, ...(style ? { style } : {}) })),
         }
       }
     }
@@ -254,6 +263,10 @@ export function install(rt) {
     if (runner?.handle === undefined || queue === undefined) return
     while (queue.jobs.length > 0) {
       const job = queue.jobs[0]
+      if (job.receiverUserId !== undefined && Date.now() >= job.privateUntil) {
+        queue.jobs.shift()
+        continue
+      }
       try {
         const draft = runner.draftChats.get(chatKey)?.sending
         if (draft !== undefined) await draft
@@ -261,9 +274,11 @@ export function install(rt) {
           queue.jobs.shift()
           continue
         }
-        const sent = job.card !== undefined && typeof runner.handle.sendCard === 'function'
-          ? await runner.handle.sendCard(job.chat, job.card)
-          : await runner.handle.send(job.chat, job)
+        const sent = job.receiverUserId !== undefined
+          ? await runner.handle.sendPrivateCard(job.chat, job.receiverUserId, job.card)
+          : job.card !== undefined && typeof runner.handle.sendCard === 'function'
+            ? await runner.handle.sendCard(job.chat, job.card)
+            : await runner.handle.send(job.chat, job)
         await job.after?.(sent)
         queue.jobs.shift()
       } catch (error) {
@@ -373,9 +388,10 @@ export function install(rt) {
 
   // One card this chat was sent and has not answered yet. A button names its own
   // card, so it must never fall through to a newer card of the same kind.
-  const openCard = (conn, chat, cardKey) => {
+  const openCard = (conn, chat, cardKey, action) => {
     const entries = runtimes.get(conn.id)?.data?.cards[cardKey]
-    const entry = entries?.find(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined)
+    const entry = entries?.findLast(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined && !item.deleted
+      && (action?.ephemeralMessageId === undefined || (item.ephemeralMessageId === action.ephemeralMessageId && item.receiverUserId === action.receiverUserId)))
     return entry === undefined ? undefined : { cardKey, entry }
   }
   const questionById = (id) => {
@@ -410,10 +426,17 @@ export function install(rt) {
     }
     return true
   }
-  const answerApprovalCard = async (conn, chat, cardKey, choice) => {
+  const answerApprovalCard = async (conn, chat, cardKey, choice, sender, action) => {
     const text = textFor(conn, chat)
-    const held = openCard(conn, chat, cardKey)
+    const held = openCard(conn, chat, cardKey, action)
     if (held === undefined) return false
+    if (held.entry.receiverUserId !== undefined && (
+      sender?.id !== held.entry.receiverUserId
+      || (action !== undefined && (action.ephemeralMessageId !== held.entry.ephemeralMessageId || action.receiverUserId !== held.entry.receiverUserId))
+    )) {
+      await sendCardReply(conn, chat, text('privateOnly'))
+      return true
+    }
     try {
       rt.answerApproval(held.cardKey.slice(2), choice)
       await settleCard(conn.id, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
@@ -436,7 +459,7 @@ export function install(rt) {
     if (data === undefined) return undefined
     for (const [cardKey, entries] of Object.entries(data.cards).reverse()) {
       if (!cardKey.startsWith('q:') && !cardKey.startsWith('a:')) continue
-      const entry = entries.find(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined)
+      const entry = entries.findLast(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined && !item.deleted)
       if (entry !== undefined) return { cardKey, entry }
     }
     return undefined
@@ -511,7 +534,7 @@ export function install(rt) {
       } else if (held !== undefined && held.cardKey.startsWith('a:')
         && picked.length === 1 && (picked[0] === 1 || picked[0] === 2)
         && rt.approvalsView().some(entry => `a:${entry.id}` === held.cardKey)) {
-        if (await answerApprovalCard(conn, msg.chat, held.cardKey, picked[0] === 1 ? 'allow' : 'reject')) return
+        if (await answerApprovalCard(conn, msg.chat, held.cardKey, picked[0] === 1 ? 'allow' : 'reject', msg.sender)) return
       }
     }
     if (target === undefined) {
@@ -532,7 +555,19 @@ export function install(rt) {
       }
     }
     if (content.length === 0) return
-    await rt.sendUser({ sessionId, content, requestId: `im:${conn.platform}:${randomUUID()}` })
+    const requestId = `im:${conn.platform}:${randomUUID()}`
+    const data = await cardsOf(conn.id)
+    if (imPlatform(conn.platform)?.privateCards === true) {
+      data.requests[requestId] = { sender: msg.sender, chatKey: msg.chat.key }
+      await writeRuntime(conn.id)
+    }
+    try {
+      await rt.sendUser({ sessionId, content, requestId })
+    } catch (error) {
+      delete data.requests[requestId]
+      scheduleWrite(conn.id)
+      throw error
+    }
   }
 
   const onAction = (conn) => async (action) => {
@@ -556,6 +591,32 @@ export function install(rt) {
     const cut = data.lastIndexOf(':')
     const cardKey = data.slice(0, cut)
     const choice = data.slice(cut + 1)
+    if (data.startsWith('m:') && cut > 2 && imPlatform(conn.platform)?.richCards === true) {
+      const key = `q:${cardKey.slice(2)}`
+      const held = openCard(conn, chat, key)
+      const found = questionById(cardKey.slice(2))
+      const handle = runners.get(conn.id)?.handle
+      if (found?.question.multiSelect !== true || held?.entry.card === undefined || typeof handle?.editCard !== 'function') {
+        await sendCardReply(conn, chat, text('stale'))
+        return
+      }
+      const { entry } = held
+      if (choice === 'done') {
+        const selected = entry.card.options.filter(option => option.checked === true).map(option => option.label)
+        if (selected.length === 0) {
+          await sendCardReply(conn, chat, text('selectOne'))
+          return
+        }
+        if (!(await answerQuestionCard(conn, chat, key, selected))) await sendCardReply(conn, chat, text('stale'))
+        return
+      }
+      const option = /^\d+$/.test(choice) ? entry.card.options[Number(choice)] : undefined
+      if (option?.checked === undefined || option.data !== data) return
+      option.checked = !option.checked
+      scheduleWrite(conn.id)
+      if (entry.messageId !== undefined) await handle.editCard(chat, entry.messageId, entry.card, entry.cardFormat)
+      return
+    }
     if (data.startsWith('q:') && cut > 2) {
       const found = questionById(cardKey.slice(2))
       const label = found?.question.options?.[Number(choice)]?.label
@@ -568,7 +629,7 @@ export function install(rt) {
     }
     if (data.startsWith('a:') && cut > 2) {
       if (choice === 'allow' || choice === 'reject') {
-        if (!(await answerApprovalCard(conn, chat, cardKey, choice))) await sendCardReply(conn, chat, text('stale'))
+        if (!(await answerApprovalCard(conn, chat, cardKey, choice, action.sender, action))) await sendCardReply(conn, chat, text('stale'))
       }
     }
   }
@@ -584,20 +645,66 @@ export function install(rt) {
   }
   const cardButtons = {
     question: (question) => (question.multiSelect === true ? undefined : (question.options ?? []).map((option, index) => ({ data: `q:${question.id}:${index}`, label: option.label }))),
+    multiSelect: (question, text) => [
+      ...(question.options ?? []).map((option, index) => ({ data: `m:${question.id}:${index}`, label: option.label, checked: false })),
+      { data: `m:${question.id}:done`, label: text('done'), submit: true },
+    ],
     approval: (id, text) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
   }
 
-  const sendCard = async (conn, cardKey, targets, body, buttons, structured) => {
+  const sendCard = async (conn, cardKey, targets, body, buttons, structured, initiator) => {
     for (const { chat, target } of targets) {
-      const text = textFor(conn, chat)
+      const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
+        && imPlatform(conn.platform)?.privateCards === true && typeof runners.get(conn.id)?.handle?.sendPrivateCard === 'function'
+      const copy = privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + 5 * 60 * 1000, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }) } : {}
+      const text = textFor(conn, privateCard ? initiator.sender : chat)
       const rendered = typeof body === 'function' ? body(text) : body
       const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
       const card = imPlatform(conn.platform)?.richCards === true && typeof runners.get(conn.id)?.handle?.sendCard === 'function' ? structured?.(text) : undefined
-      await markCard(conn.id, cardKey, chat, undefined, rendered, card)
-      enqueue(conn, addressKey(chat), { chat, target, text: rendered, buttons: renderedButtons, card, after: async (sent) => {
-        await markCard(conn.id, cardKey, chat, sent?.messageId, rendered, card, sent?.cardFormat)
+      await markCard(conn.id, cardKey, chat, undefined, rendered, card, undefined, copy)
+      enqueue(conn, addressKey(chat), { chat, target, text: rendered, buttons: renderedButtons, card, ...copy, after: async (sent) => {
+        await markCard(conn.id, cardKey, chat, sent?.messageId, rendered, card, sent?.cardFormat, { ...copy, ...(sent?.ephemeralMessageId === undefined ? {} : { ephemeralMessageId: sent.ephemeralMessageId, ephemeralMessageIds: sent.ephemeralMessageIds }) })
         await settledEdits(conn)
       } })
+    }
+  }
+
+  const expirePrivateCards = async (conn) => {
+    const runner = runners.get(conn.id)
+    const data = runtimes.get(conn.id)?.data
+    if (runner === undefined || data === undefined || rt.readOnly() !== undefined) return
+    runner.privateQueued ??= new WeakSet()
+    for (const entries of Object.values(data.cards)) {
+      for (const entry of entries) {
+        if (entry.receiverUserId === undefined || entry.deleted) continue
+        const chat = conn.chats?.[entry.chatKey]
+        if (chat === undefined) continue
+        const address = { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
+        let publicCopy = entries.find(copy => copy.chatKey === entry.chatKey && copy.threadId === entry.threadId && copy.receiverUserId === undefined)
+        if (entry.answer === undefined && Date.now() >= entry.privateUntil && publicCopy === undefined) {
+          publicCopy = { chatKey: entry.chatKey, text: entry.text, card: structuredClone(entry.card), threadId: entry.threadId }
+          entries.push(publicCopy)
+          scheduleWrite(conn.id)
+        }
+        if (publicCopy !== undefined && publicCopy.messageId === undefined && !runner.privateQueued.has(publicCopy)) {
+          runner.privateQueued.add(publicCopy)
+          const copy = publicCopy
+          enqueue(conn, addressKey(address), { chat: address, card: copy.card, after: async sent => {
+            copy.messageId = sent?.messageId
+            copy.cardFormat = sent?.cardFormat
+            runner.privateQueued.delete(copy)
+            scheduleWrite(conn.id)
+            await settledEdits(conn)
+          } })
+          scheduleWrite(conn.id)
+        }
+        if (publicCopy?.messageId !== undefined && entry.ephemeralMessageId !== undefined) {
+          await runner.handle.deletePrivateCard(address, entry)
+          entry.deleted = true
+          entry.edited = true
+          scheduleWrite(conn.id)
+        }
+      }
     }
   }
 
@@ -616,7 +723,7 @@ export function install(rt) {
         if (bot === undefined) continue
         const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
         await sendCard(conn, cardKey, listeners(conn, { botId }), text => cardText.question(bot.name, question, text), buttons,
-          text => ({ text: cardText.question(bot.name, question, text), options: cardButtons.question(question) ?? [] }))
+          text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
       }
       // Secret requests: text only — the key is typed on the computer or phone.
       for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
@@ -648,16 +755,18 @@ export function install(rt) {
     if (runner?.handle.edit === undefined || data === undefined) return
     for (const entries of Object.values(data.cards)) {
       for (const entry of entries) {
-        if (entry.answer === undefined || entry.messageId === undefined || entry.edited === true) continue
+        if (entry.deleted || entry.answer === undefined || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || entry.edited === true) continue
         const chat = conn.chats?.[entry.chatKey]
         if (chat === undefined) continue
         const text = textFor(conn, chat)
         entry.edited = true
         const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${text('answered')})`
         const address = { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
-        const editing = entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof runner.handle.editCard === 'function'
-          ? runner.handle.editCard(address, entry.messageId, entry.card, entry.cardFormat)
-          : runner.handle.edit(address, entry.messageId, { text: body })
+        const editing = entry.receiverUserId !== undefined && typeof runner.handle.editPrivateCard === 'function'
+          ? runner.handle.editPrivateCard(address, entry, entry.card)
+          : entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof runner.handle.editCard === 'function'
+            ? runner.handle.editCard(address, entry.messageId, entry.card, entry.cardFormat)
+            : runner.handle.edit(address, entry.messageId, { text: body })
         await editing.catch(error => {
           entry.edited = false
           if (!error?.stopped) rt.warn('ds-bot: im settled card edit failed: %s', error)
@@ -700,7 +809,7 @@ export function install(rt) {
       for (const [cardKey, entries] of Object.entries(data.cards)) {
         if (openCard(cardKey)) continue
         const droppable = entries.length === 0 || entries.every(entry => entry.answer !== undefined
-          && (entry.edited === true || entry.messageId === undefined || !editable || conn.chats?.[entry.chatKey] === undefined))
+          && (entry.edited === true || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || !editable || conn.chats?.[entry.chatKey] === undefined))
         if (droppable) {
           delete data.cards[cardKey]
           pruned = true
@@ -782,6 +891,13 @@ export function install(rt) {
         }, TYPING_MS)
         runner.typing.unref?.()
       }
+      if (platform?.privateCards === true && typeof handle.deletePrivateCard === 'function') {
+        runner.privateTimer = setInterval(() => {
+          const current = fresh(conn.id)
+          if (current !== undefined) void expirePrivateCards(current).catch(error => rt.warn('ds-bot: Private card fallback failed: %s', error))
+        }, 1000)
+        runner.privateTimer.unref?.()
+      }
       await diffCards()
     } catch (error) {
       runners.delete(conn.id)
@@ -792,6 +908,7 @@ export function install(rt) {
     const runner = runners.get(id)
     runners.delete(id)
     if (runner?.typing !== undefined) clearInterval(runner.typing)
+    clearInterval(runner?.privateTimer)
     for (const queue of runner?.queues.values() ?? []) clearTimeout(queue.retry)
     for (const held of runner?.draftChats.values() ?? []) clearTimeout(held.timer)
     await Promise.resolve(runner?.handle?.stop?.()).catch(() => {})
@@ -1123,6 +1240,25 @@ export function install(rt) {
     }
   })
   ctx.on('session/event', (session, event) => {
+    const initiatorRpcId = event.type === 'user/message' ? event.data?.source?.rpcId : undefined
+    const request = initiatorRpcId === undefined ? undefined : [...runtimes.entries()]
+      .filter(([id]) => connections()[id] !== undefined).map(([, held]) => held.data.requests[initiatorRpcId]).find(Boolean)
+    for (const [id, held] of runtimes) {
+      if (imPlatform(connections()[id]?.platform)?.privateCards !== true
+        || !['turn/start', 'user/message', 'turn/end'].includes(event.type)) continue
+      const data = held.data
+      if (event.type === 'turn/start') data.turns[session.id] = { turn: event.data.turn }
+      if (event.type === 'user/message') {
+        const turn = data.turns[session.id]
+        if (turn !== undefined && turn.opened !== true) {
+          turn.opened = true
+          if (request !== undefined) turn.initiator = request
+        }
+        if (request !== undefined) delete data.requests[initiatorRpcId]
+      }
+      if (event.type === 'turn/end') delete data.turns[session.id]
+      scheduleWrite(id)
+    }
     if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
       for (const runner of runners.values()) {
         for (const [key, attempt] of runner.drafts) {
@@ -1169,12 +1305,13 @@ export function install(rt) {
           const bot = rt.botOf(data.botId)
           const targets = data.roomId !== undefined ? listeners(conn, { roomId: data.roomId }) : listeners(conn, { botId: data.botId })
           const buttons = imPlatform(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
+          const initiator = (await cardsOf(conn.id)).turns[data.sessionId]?.initiator
           await sendCard(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
             text => ({
               text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),
               details: data.detail,
               options: cardButtons.approval(data.id, text).map((option, index) => ({ ...option, style: index === 0 ? 'success' : 'danger' })),
-            }))
+            }), initiator)
         }
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
       return

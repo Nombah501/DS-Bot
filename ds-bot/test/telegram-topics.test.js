@@ -179,3 +179,17 @@ test('S1: narrowing access prevents further Draft previews and old Card answers'
   assert.equal(s.calls.slice(after).some(call => call.method === 'sendRichMessageDraft'), false)
   assert.equal(s.agentOf('b').followed, undefined)
 })
+
+test('S1: multi-select toggles and submission remain in their Topic after integration', async t => {
+  const s = await setup(t)
+  await s.question({ question: 'Topic picks?', multiSelect: true, options: [{ label: 'First' }, { label: 'Second' }] }, 'b')
+  const card = await s.request('sendRichMessage', p => /Topic picks/.test(p.rich_message.html))
+  assert.equal(card.params.message_thread_id, 102)
+  const data = [...card.params.rich_message.html.matchAll(/data="([^"]+)"/g)].map(match => match[1])
+  const callback = (id, value) => s.pushUpdate({ callback_query: { id, from: { id: 9, first_name: 'Ann' }, message: { message_id: 20, message_thread_id: 102, chat: { id: 5, type: 'private' } }, data: value } })
+  callback('toggle-topic', data[0])
+  await s.request('editMessageText', p => /☑ First/.test(p.rich_message?.html ?? ''))
+  callback('submit-topic', data.at(-1))
+  await until(() => s.agentOf('b').followed)
+  assert.equal(s.agentOf('a').followed, undefined)
+})

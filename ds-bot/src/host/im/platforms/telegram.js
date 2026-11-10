@@ -9,19 +9,20 @@ const POLL_TIMEOUT = 50
 const UPDATES = ['message', 'callback_query', 'stopped_message_generation']
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const thread = chat => chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }
+const optionLabel = option => option.checked === undefined ? option.label : `${option.checked ? '☑' : '☐'} ${option.label}`
 const keyboard = buttons => ({ inline_keyboard: (buttons ?? []).map(button => [{ text: button.label, ...(button.disabled ? { disabled: {} } : { callback_data: button.data }) }]) })
 const plainCard = card => ({
   text: [card.text, card.details?.text, card.details?.code, card.settled ? `— ${card.settled.answer}` : undefined].filter(Boolean).join('\n'),
-  buttons: card.settled ? card.settled.options.map(option => ({ ...option, disabled: true })) : card.options,
+  buttons: card.settled ? card.settled.options.map(option => ({ ...option, disabled: true })) : (card.options ?? []).map(option => ({ ...option, label: optionLabel(option) })),
 })
 const cardChunks = card => {
   const options = card.settled === undefined ? (card.options ?? []) : card.settled.options
   const rows = options.map(option => {
     if (card.settled === undefined && (Buffer.byteLength(option.data) > 64 || option.data.length === 0)) throw Object.assign(new Error('Telegram card callback must be 1–64 bytes'), { permanent: true })
     const action = card.settled === undefined ? `type="callback_data" data="${escape(option.data)}"` : 'type="disabled"'
-    return `<tg-button-row><tg-button ${action}${option.style ? ` style="${escape(option.style)}"` : ''}>${escape(option.label)}</tg-button></tg-button-row>`
+    return `<tg-button-row><tg-button ${action}${option.style ? ` style="${escape(option.style)}"` : ''}>${escape(optionLabel(option))}</tg-button></tg-button-row>`
   }).join('\n')
-  const buttonSize = (card.options ?? []).reduce((size, option) => size + Array.from(option.label).length + 1, 0)
+  const buttonSize = (card.options ?? []).reduce((size, option) => size + Array.from(optionLabel(option)).length + 1, 0)
   // Keep the same content chunks on settlement; reserve both labels and the answer footer.
   const limit = Math.max(1, RICH_LIMIT - buttonSize * 2 - 32)
   const chunks = chunkRich(card.text, limit)
@@ -198,6 +199,9 @@ export default {
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           data: String(query.data ?? ''),
           messageId: message.message_id,
+          callbackQueryId: query.id,
+          ephemeralMessageId: message.ephemeral_message_id,
+          receiverUserId: message.receiver_user?.id === undefined ? undefined : String(message.receiver_user.id),
         })
       }
     }
@@ -315,6 +319,29 @@ export default {
           return
         }
         await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: cardChunks(card).at(-1)?.html ?? '<p></p>' } })
+      },
+      sendPrivateCard: async (chat, receiverUserId, card) => {
+        const ephemeralMessageIds = []
+        for (const chunk of cardChunks(card)) {
+          const sent = await call('sendRichMessage', {
+            chat_id: chat.key,
+            ...(chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }),
+            ephemeral_message_parameters: { receiver_user_id: Number(receiverUserId) },
+            rich_message: { html: chunk.html },
+          })
+          if (!Number.isSafeInteger(sent?.ephemeral_message_id)) throw Object.assign(new Error('Telegram did not return a Private card identity'), { permanent: true })
+          ephemeralMessageIds.push(sent.ephemeral_message_id)
+        }
+        return { ephemeralMessageId: ephemeralMessageIds.at(-1), ephemeralMessageIds, cardFormat: 'rich' }
+      },
+      editPrivateCard: (chat, copy, card) => call('editEphemeralMessageText', {
+        chat_id: chat.key, receiver_user_id: Number(copy.receiverUserId), ephemeral_message_id: copy.ephemeralMessageId,
+        rich_message: { html: cardChunks(card).at(-1)?.html ?? '<p></p>' },
+      }),
+      deletePrivateCard: async (chat, copy) => {
+        for (const id of copy.ephemeralMessageIds ?? [copy.ephemeralMessageId]) {
+          await call('deleteEphemeralMessage', { chat_id: chat.key, receiver_user_id: Number(copy.receiverUserId), ephemeral_message_id: id })
+        }
       },
       draft: async (chat, { draftId, text }) => {
         if (chat.kind !== 'direct') return
