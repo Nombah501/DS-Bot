@@ -170,6 +170,8 @@ export default {
         const kind = chat.type === 'private' ? 'direct' : 'group'
         const from = message.from ?? {}
         const raw = String(message.text ?? message.caption ?? '')
+        const commandBot = /^\/\w+(@\w+)(?:\s|$)/.exec(raw)?.[1]
+        if (chat.is_forum === true && commandBot !== undefined && commandBot.toLowerCase() !== selfName.toLowerCase()) return
         const mentioned = kind === 'group' && (
           (selfName !== '' && raw.includes(selfName))
           || (message.entities ?? []).some(entity => entity.type === 'mention' && raw.slice(entity.offset, entity.offset + entity.length) === selfName)

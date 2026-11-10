@@ -153,3 +153,14 @@ test('S1: ordinary groups keep their explicit binding and mention requirement', 
   s.step('Ordinary output', {}, 'b')
   assert.equal((await s.request('sendRichMessage', p => p.chat_id === '-70')).params.message_thread_id, undefined)
 })
+
+test('S1: mention-free forum routing ignores commands addressed to another Telegram bot', async t => {
+  const s = await startBridge(t)
+  s.replies.getChatMember = { ok: true, result: { status: 'administrator' } }
+  const after = s.calls.length
+  s.message('/bind@anotherbot', { chat: forum, message_thread_id: 40 })
+  s.message('/status@fakebot', { chat: forum })
+  await s.request('sendRichMessage', p => p.chat_id === '-60' && /Chief/.test(p.rich_message.html), after)
+  assert.equal(s.calls.slice(after).some(call => call.method === 'getChatMember'), false)
+  assert.equal(s.calls.slice(after).some(call => /Choose a Bot/.test(call.params.rich_message?.html ?? '')), false)
+})
