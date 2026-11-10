@@ -27,7 +27,7 @@ test('S1: a question is a rich Card with embedded options and bounded callbacks'
 
 test('S1: approval Card embeds styled buttons and collapsible tool details', async (t) => {
   const s = await startBridge(t)
-  s.sessionEvent('tool/call', { name: 'bash', callId: 'inspect', arguments: JSON.stringify({ description: 'Inspect <report>', command: 'cat report && echo \"ok\"' }) })
+  s.sessionEvent('tool/call', { name: 'bash', callId: 'inspect', arguments: JSON.stringify({ description: 'Inspect <report>', command: 'cat report && echo "ok"' }) })
   const controller = new AbortController()
   t.after(() => controller.abort())
   const outcome = s.approval({ agent: s.agentOf('a'), toolName: 'bash', callId: 'inspect', reason: 'Inspect report', signal: controller.signal })
