@@ -169,3 +169,29 @@ test('S1: an existing Status panel is replaced after Step delivery recovers its 
   s.pushUpdate({ widget_query: { id: 'moved-panel', from: { id: 9 }, chat: { id: 5, type: 'private' }, message_id: pin.params.message_id, type: { type: 'data' }, data: 'stop' } })
   await s.request('sendMessage', p => p.message_thread_id === 104 && /Nothing is running/.test(p.text), after)
 })
+
+test('S1: private Topic lifecycle leaves admin-managed forum bindings intact', async t => {
+  const s = await setup(t)
+  const forum = { id: -60, type: 'supergroup', title: 'Forum', is_forum: true }
+  s.replies.getChatMember = { ok: true, result: { status: 'administrator' } }
+  s.message('/bind', { chat: forum, message_thread_id: 40 })
+  const card = await s.request('sendRichMessage', p => p.chat_id === '-60' && /Choose a Bot/.test(p.rich_message.html))
+  const data = /data="([^"]+)"[^>]*>Writer</.exec(card.params.rich_message.html)[1]
+  s.pushUpdate({ callback_query: { id: 'bind-lifecycle', from: { id: 9 }, data, message: { message_id: 900, chat: forum, message_thread_id: 40 } } })
+  await s.request('editMessageText', p => /type="disabled"/.test(p.rich_message?.html ?? ''))
+  const after = s.calls.length
+  await s.rt.updateBot('b', { name: 'Editor' })
+  await s.request('editForumTopic', p => p.message_thread_id === 102 && p.name === 'Editor', after)
+  s.step('Bound after rename', {}, 'b')
+  await s.request('sendRichMessage', p => p.chat_id === '-60' && p.message_thread_id === 40 && /Bound after rename/.test(p.rich_message.html), after)
+  s.replies.sendRichMessage = params => params.chat_id === '-60'
+    ? { ok: false, error_code: 400, description: 'Bad Request: message thread not found' }
+    : { ok: true, result: { message_id: 603 } }
+  s.step('Missing forum Topic', {}, 'b')
+  await s.request('sendRichMessage', p => p.chat_id === '-60' && /Missing forum Topic/.test(p.rich_message.html), after)
+  s.message('/stop', { chat: forum, message_thread_id: 40 })
+  await s.request('sendMessage', p => p.chat_id === '-60' && /Nothing is running/.test(p.text), after)
+  await s.rt.deleteBot('b')
+  await s.request('closeForumTopic', p => p.chat_id === '5' && p.message_thread_id === 102, after)
+  assert.equal(s.calls.slice(after).some(call => ['createForumTopic', 'editForumTopic', 'closeForumTopic'].includes(call.method) && call.params.chat_id === '-60'), false)
+})

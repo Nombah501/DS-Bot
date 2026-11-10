@@ -44,6 +44,9 @@ export function accessTargets(person, state) {
 export function topicTarget(conn, address) {
   const chat = conn.chats?.[address.key]
   if (chat === undefined) return undefined
+  if (chat.kind === 'group' && chat.isForum === true && (address.threadId === undefined || address.threadId === 1)) {
+    return chat.topics?.[1]?.target ?? (conn.botId === undefined || conn.botId === '' ? undefined : { botId: conn.botId })
+  }
   if (address.threadId !== undefined) return chat.topics?.[address.threadId]?.target
   return chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
 }
@@ -64,13 +67,13 @@ export function privateTopicCreator(rt, handleOf, textFor) {
     const run = (async () => {
       const chat = conn.chats?.[chatKey]
       const handle = handleOf(conn.id)
-      if (chat === undefined || handle === undefined) return
+      if (chat?.kind !== 'direct' || handle === undefined) return
       const person = conn.paired?.find(person => person.id === chat.personId)
       for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
         if (topic.closed || topic.replacedBy !== undefined) continue
         const name = (topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId))?.name
         const address = { key: chatKey, kind: chat.kind, threadId: Number(threadId) }
-        const reason = name === undefined ? 'topicDeleted' : chat.kind === 'direct' && !allows(person, topic.target) ? 'topicRevoked' : undefined
+        const reason = name === undefined ? 'topicDeleted' : !allows(person, topic.target) ? 'topicRevoked' : undefined
         if (reason !== undefined && typeof handle.closeTopic === 'function') {
           if (!topic.notified) {
             await handle.send(address, { text: textFor(conn, chat)(reason, { name: topic.name }) })
@@ -111,7 +114,7 @@ export function topicRestorer(rt, handleOf) {
     const chat = conn.chats?.[address.key]
     const topic = chat?.topics?.[address.threadId]
     const handle = handleOf(conn.id)
-    if (topic === undefined || topic.closed || typeof handle?.createTopic !== 'function') return undefined
+    if (chat?.kind !== 'direct' || topic === undefined || topic.closed || typeof handle?.createTopic !== 'function') return undefined
     if (topic.replacedBy !== undefined) return topic.replacedBy
     if (!canDeliver(conn, address, topic.target)) return undefined
     const target = topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId)

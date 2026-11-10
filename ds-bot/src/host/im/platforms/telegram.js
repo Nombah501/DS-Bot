@@ -182,6 +182,8 @@ export default {
         const kind = chat.type === 'private' ? 'direct' : 'group'
         const from = message.from ?? {}
         const raw = String(message.text ?? message.caption ?? '')
+        const commandBot = /^\/\w+(@\w+)(?:\s|$)/.exec(raw)?.[1]
+        if (chat.is_forum === true && commandBot !== undefined && commandBot.toLowerCase() !== selfName.toLowerCase()) return
         const mentioned = kind === 'group' && (
           (selfName !== '' && raw.includes(selfName))
           || (message.entities ?? []).some(entity => entity.type === 'mention' && raw.slice(entity.offset, entity.offset + entity.length) === selfName)
@@ -190,7 +192,7 @@ export default {
         )
         const { images, files } = await fileBlocks(message)
         await handlers.onMessage({
-          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
+          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           text: kind === 'group' ? strip(raw) : raw,
           images,
@@ -207,7 +209,7 @@ export default {
         const from = query.from ?? {}
         await call('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {})
         await handlers.onAction({
-          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
+          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
           sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
           data: String(query.data ?? ''),
           messageId: message.message_id,
@@ -303,6 +305,10 @@ export default {
 
     return {
       send,
+      isAdmin: async (chat, userId) => {
+        const member = await call('getChatMember', { chat_id: chat.key, user_id: Number(userId) })
+        return member?.status === 'creator' || member?.status === 'administrator'
+      },
       sendStatusPanel: async (chat, { html, data, caption }) => {
         if (chat.kind !== 'direct') throw new Error('Status widgets require a private chat')
         const sent = await call('sendWidget', { chat_id: chat.key, ...thread(chat), html, chat_data: data, caption, allow_queries: true })

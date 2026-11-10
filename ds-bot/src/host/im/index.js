@@ -10,6 +10,7 @@ import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
 import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, topicTarget } from './topics.js'
+import { forumBinder } from './forum-bind.js'
 import { statusData, statusPanels } from './status-panel.js'
 
 const RECONCILE_MS = 15_000
@@ -50,6 +51,12 @@ export function install(rt) {
         denied: 'Этот Bot или группа не входят в ваш список доступа.',
         topicDeleted: `Topic закрыта: ${values.name} удалён.`,
         topicRevoked: `Topic закрыта: ${values.name} больше не входит в ваш список доступа.`,
+        bindChoose: 'Выберите Bot или группу для этой Topic.',
+        bindAdmin: 'Для /bind нужны права администратора Telegram. Убедитесь, что Bridge-бот — администратор группы.',
+        bindForum: 'Используйте /bind в Topic форум-супергруппы.',
+        bindEmpty: 'В вашем списке доступа нет Bots или групп для привязки.',
+        bindHint: 'Эта Topic не привязана. Администратор группы может выбрать Bot или группу командой /bind.',
+        bindBound: `Topic привязана к ${values.target}.`,
         stale: 'На эту карточку уже ответили.',
         privateOnly: 'Только инициатор может ответить на эту карточку.',
         noFile: 'Этот файл нельзя отправить здесь; отправьте его на компьютере.',
@@ -88,6 +95,12 @@ export function install(rt) {
       denied: 'This Bot or group is not on your Access list.',
       topicDeleted: zh() ? `话题已关闭：${values.name} 已删除。` : `Topic closed: ${values.name} was deleted.`,
       topicRevoked: zh() ? `话题已关闭：${values.name} 已不在你的访问列表中。` : `Topic closed: ${values.name} is no longer on your Access list.`,
+      bindChoose: 'Choose a Bot or group for this Topic.',
+      bindAdmin: 'Telegram administrator rights are required for /bind. Make sure the Bridge bot is a group administrator.',
+      bindForum: 'Use /bind in a forum supergroup Topic.',
+      bindEmpty: 'Your Access list has no Bots or groups to bind.',
+      bindHint: 'This Topic is not bound. A group administrator can choose a Bot or group with /bind.',
+      bindBound: `Topic bound to ${values.target}.`,
       stale: zh() ? '这张卡已经答过了。' : 'This card was already answered.',
       privateOnly: zh() ? '只有发起人可以回答这张卡。' : 'Only the Initiator can answer this card.',
       noFile: zh() ? '这个文件发不过去，请在电脑上发。' : 'This file cannot be sent here; send it on the computer.',
@@ -281,6 +294,14 @@ export function install(rt) {
       if (topicMode && chat.kind === 'direct' && conn.account?.hasTopicsEnabled === true) {
         for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
           if (!topic.closed && topic.replacedBy === undefined && allows(person, topic.target)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+        }
+        continue
+      }
+      if (topicMode && chat.kind === 'group' && chat.isForum === true) {
+        const target = topicTarget(conn, chat)
+        if (target !== undefined) out.push({ chatKey, chat: { ...chat, threadId: 1 }, target })
+        for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
+          if (threadId !== '1') out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
         }
         continue
       }
@@ -554,6 +575,7 @@ export function install(rt) {
     }
     return undefined
   }
+  const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, enqueue, sendText, textFor })
 
   const onMessage = (conn) => async (msg) => {
     const text = textFor(conn, msg.sender)
@@ -566,13 +588,22 @@ export function install(rt) {
       return
     }
     conn.chats ??= {}
-    if (msg.chat.kind === 'group' && !msg.mentioned) return
+    if (msg.chat.kind === 'group' && !msg.mentioned && !(imPlatform(conn.platform)?.topics === true && msg.chat.isForum === true)) return
     if (conn.chats[msg.chat.key] === undefined) {
       conn.chats[msg.chat.key] = { kind: msg.chat.kind, title: msg.chat.title, at: Date.now() }
       await rt.save()
     }
     const body = String(msg.text ?? '').trim()
     const chat = conn.chats[msg.chat.key]
+    if (imPlatform(conn.platform)?.topics === true && msg.chat.isForum === true && chat.isForum !== true) {
+      chat.isForum = true
+      await rt.save()
+    }
+    if (imPlatform(conn.platform)?.topics === true && /^\/bind(?:@\S+)?\s*$/.test(body)) {
+      await forumBind.command(conn, msg)
+      return
+    }
+    const unboundKey = chat.isForum === true ? 'bindHint' : msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'
     if (imPlatform(conn.platform)?.topics === true && chat.kind === 'direct' && chat.personId !== msg.sender.id) {
       chat.personId = msg.sender.id
       await rt.save()
@@ -588,12 +619,12 @@ export function install(rt) {
     }
     if (/^\/start(?:@\S+)?\s*$/.test(body)) {
       const name = target === undefined ? undefined : targetName(conn, target)
-      await sendText(conn, msg.chat, name === undefined ? text(msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound') : text('greeting', { name }))
+      await sendText(conn, msg.chat, name === undefined ? text(unboundKey) : text('greeting', { name }))
       return
     }
     if (/^\/stop(?:@\S+)?\s*$/.test(body)) {
       if (target === undefined) {
-        await sendText(conn, msg.chat, text(msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'))
+        await sendText(conn, msg.chat, text(unboundKey))
         return
       }
       await stopTarget(conn, { ...msg.chat, languageCode: msg.sender.languageCode }, target)
@@ -601,7 +632,7 @@ export function install(rt) {
     }
     if (imPlatform(conn.platform)?.topics === true && /^\/status(?:@\S+)?\s*$/.test(body)) {
       if (target === undefined) {
-        await sendText(conn, msg.chat, text(msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'))
+        await sendText(conn, msg.chat, text(unboundKey))
       } else {
         const panels = runners.get(conn.id)?.panels
         if (panels !== undefined && msg.chat.kind === 'direct') {
@@ -636,7 +667,7 @@ export function install(rt) {
       }
     }
     if (target === undefined) {
-      await sendText(conn, msg.chat, text(msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'))
+      await sendText(conn, msg.chat, text(unboundKey))
       return
     }
     const sessionId = target.botId ?? target.roomId
@@ -677,6 +708,10 @@ export function install(rt) {
     }
     const data = String(action.data ?? '')
     const chat = { ...action.chat, languageCode: action.sender.languageCode }
+    if (imPlatform(conn.platform)?.topics === true && data.startsWith('b:')) {
+      await forumBind.action(conn, { ...action, chat })
+      return
+    }
     if (imPlatform(conn.platform)?.topics === true) {
       const target = resolveTarget(conn, chat)
       if (target === undefined || !allows(conn.paired?.find(person => person.id === action.sender.id), target)) {
