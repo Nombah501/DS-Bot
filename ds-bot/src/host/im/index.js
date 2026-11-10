@@ -14,6 +14,8 @@ const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
 const RETRY_MS = 5_000
 const TYPING_MS = 4_000
+// Local conservative policy; Telegram's numeric Draft rate limit is unverified.
+const DRAFT_MS = 1000
 const NUMBERS = /^\s*\d+(\s+\d+)*\s*$/
 
 const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase()
@@ -216,6 +218,7 @@ export function install(rt) {
     while (queue.jobs.length > 0) {
       const job = queue.jobs[0]
       try {
+        await runner.draftChats?.get(chatKey)?.sending
         const sent = await runner.handle.send(job.chat, job)
         job.after?.(sent)
         queue.jobs.shift()
@@ -235,6 +238,48 @@ export function install(rt) {
   const sendText = (conn, chat, body, buttons, after) => enqueue(conn, chat.key, { chat, text: body, buttons, after })
   const sendTo = (conn, chatKey, chat, body, buttons, after, rich = false) => enqueue(conn, chatKey, { chat, text: body, buttons, after, ...(rich && imPlatform(conn.platform)?.richMessages === true ? { rich: true } : {}) })
 
+  // Drafts never enter the durable retry queue: only its latest pending text matters.
+  const flushDraft = (conn, chatKey) => {
+    const runner = runners.get(conn.id)
+    const held = runner?.draftChats.get(chatKey)
+    if (held === undefined || held.pending === undefined || held.sending !== undefined || held.timer !== undefined) return
+    const wait = held.lastAt + DRAFT_MS - Date.now()
+    if (wait > 0) {
+      held.timer = setTimeout(() => {
+        held.timer = undefined
+        flushDraft(conn, chatKey)
+      }, wait)
+      held.timer.unref?.()
+      return
+    }
+    const copy = held.pending
+    held.pending = undefined
+    if (copy.ended) return
+    held.lastAt = Date.now()
+    held.sending = Promise.resolve(runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text }))
+      .catch(error => {
+        if (runners.get(conn.id) !== runner) return
+        rt.warn('ds-bot: im draft failed: %s', rt.redactSecrets(String(error?.message ?? error)))
+        if (Number(error?.retryAfter) > 0) held.lastAt = Date.now() + error.retryAfter * 1000
+      })
+      .finally(() => {
+        held.sending = undefined
+        if (runners.get(conn.id) === runner) flushDraft(conn, chatKey)
+      })
+  }
+  const finishDraft = (runner, key) => {
+    const attempt = runner.drafts.get(key)
+    if (attempt === undefined) return
+    for (const copy of attempt.copies) {
+      copy.ended = true
+      const held = runner.draftChats.get(copy.chat.key)
+      if (held?.pending !== copy) continue
+      held.pending = undefined
+      clearTimeout(held.timer)
+      held.timer = undefined
+    }
+    runner.drafts.delete(key)
+  }
   // ----------------------------------------------------------------- inbound
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
   const requested = (conn, msg) => {
@@ -253,6 +298,30 @@ export function install(rt) {
     if (target?.botId !== undefined && rt.botOf(target.botId) !== undefined) return target
     if (target?.roomId !== undefined && rt.roomOf(target.roomId) !== undefined) return target
     return undefined
+  }
+
+  // Shared Stop path for /stop, Drafts and the Status panel.
+  const stopTarget = async (conn, chat, target) => {
+    const runner = runners.get(conn.id)
+    for (const [key, attempt] of runner?.drafts ?? []) {
+      if (attempt.copies.some(copy => target.botId !== undefined ? copy.target.botId === target.botId : copy.target.roomId === target.roomId)) finishDraft(runner, key)
+    }
+    const stopped = target.botId !== undefined ? await rt.stopChat(target.botId) : await rt.stopRoomWork(target.roomId)
+    sendText(conn, chat, textFor(conn, chat)(stopped ? 'stopped' : 'idle'))
+    return stopped
+  }
+  const onStop = (conn) => async ({ chat, draftId }) => {
+    const runner = runners.get(conn.id)
+    if (imPlatform(conn.platform)?.drafts !== true || chat.kind !== 'direct' || !Number.isSafeInteger(draftId) || draftId === 0) return
+    for (const attempt of runner?.drafts.values() ?? []) {
+      const copy = attempt.copies.find(copy => copy.draftId === draftId && copy.chat.key === chat.key && copy.chat.threadId === chat.threadId && !copy.ended)
+      if (copy === undefined) continue
+      const current = conn.chats?.[chat.key]
+      const target = current === undefined ? undefined : resolveTarget(conn, current)
+      if (target === undefined || target.botId !== copy.target.botId || target.roomId !== copy.target.roomId) return
+      await stopTarget(conn, { ...copy.chat, languageCode: current.languageCode }, target)
+      return
+    }
   }
 
   // One card this chat was sent and has not answered yet. A button names its own
@@ -359,8 +428,7 @@ export function install(rt) {
         await sendText(conn, msg.chat, text(msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'))
         return
       }
-      const stopped = target.botId !== undefined ? await rt.stopChat(target.botId) : await rt.stopRoomWork(target.roomId)
-      await sendText(conn, msg.chat, text(stopped ? 'stopped' : 'idle'))
+      await stopTarget(conn, { ...msg.chat, languageCode: msg.sender.languageCode }, target)
       return
     }
     if (NUMBERS.test(body)) {
@@ -591,7 +659,7 @@ export function install(rt) {
     }
     // The slot is reserved before the async work: a concurrent sync cannot
     // start a second adapter for the same connection.
-    const runner = { handle: undefined, queues: new Map(), typing: undefined }
+    const runner = { handle: undefined, queues: new Map(), typing: undefined, drafts: new Map(), draftChats: new Map(), nextDraftId: randomBytes(4).readUInt32BE(0) || 1 }
     runners.set(conn.id, runner)
     setStatus(conn.id, { state: 'connecting', at: Date.now() })
     try {
@@ -604,6 +672,10 @@ export function install(rt) {
         onAction: (action) => {
           const current = fresh(conn.id)
           return current === undefined ? undefined : onAction(current)(action).catch(error => rt.warn('ds-bot: im action failed: %s', error))
+        },
+        onStop: (event) => {
+          const current = fresh(conn.id)
+          return current === undefined ? undefined : onStop(current)(event).catch(error => rt.warn('ds-bot: im stop failed: %s', error))
         },
         onStatus: onStatus(conn.id),
       })
@@ -634,6 +706,7 @@ export function install(rt) {
     runners.delete(id)
     if (runner?.typing !== undefined) clearInterval(runner.typing)
     for (const queue of runner?.queues.values() ?? []) clearTimeout(queue.retry)
+    for (const held of runner?.draftChats.values() ?? []) clearTimeout(held.timer)
     await Promise.resolve(runner?.handle?.stop?.()).catch(() => {})
     if (statuses.get(id)?.state !== 'error') setStatus(id, { state: 'off', at: Date.now() })
   }
@@ -905,7 +978,50 @@ export function install(rt) {
   }
 
   // ----------------------------------------------------------------- outbound
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    const key = JSON.stringify([agent.id, frame.attemptId])
+    for (const conn of Object.values(connections())) {
+      const runner = runners.get(conn.id)
+      if (imPlatform(conn.platform)?.drafts !== true || typeof runner?.handle?.draft !== 'function') continue
+      if (frame.type === 'start') {
+        const botId = rt.chatOwners.get(agent.id)
+        const roomId = rt.groupOwners.get(agent.id)?.roomId
+        const match = roomId === undefined ? { botId } : { roomId }
+        if ((botId === undefined && roomId === undefined) || (roomId === undefined && (state.exchangeTurns[agent.id] ?? []).includes(frame.turn))) continue
+        finishDraft(runner, key)
+        const attempt = { sessionId: agent.id, turn: frame.turn, step: frame.step, text: '', copies: [] }
+        for (const { chatKey, chat, target } of listeners(conn, match)) {
+          if (chat.kind !== 'direct') continue
+          attempt.copies.push({ attempt, target, draftId: runner.nextDraftId++, chat: { key: chatKey, kind: chat.kind, title: chat.title, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }) } })
+        }
+        if (attempt.copies.length > 0) runner.drafts.set(key, attempt)
+        continue
+      }
+      const attempt = runner.drafts.get(key)
+      if (attempt === undefined) continue
+      if (frame.type === 'end') {
+        finishDraft(runner, key)
+      } else if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta') {
+        attempt.text += frame.chunk.text
+        for (const copy of attempt.copies) {
+          let held = runner.draftChats.get(copy.chat.key)
+          if (held === undefined) runner.draftChats.set(copy.chat.key, held = { lastAt: 0 })
+          held.pending = copy
+          flushDraft(conn, copy.chat.key)
+        }
+      }
+    }
+  })
   ctx.on('session/event', (session, event) => {
+    if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
+      for (const runner of runners.values()) {
+        for (const [key, attempt] of runner.drafts) {
+          if (attempt.sessionId === session.id
+            && (event.data?.turn === undefined || attempt.turn === event.data.turn)
+            && (event.data?.step === undefined || attempt.step === event.data.step)) finishDraft(runner, key)
+        }
+      }
+    }
     const botId = rt.chatOwners.get(session.id)
     if (botId === undefined) {
       imVia.delete(session.id)
