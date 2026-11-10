@@ -6,7 +6,7 @@ import { retryDelay, retryWait } from './retry.js'
 
 const TEXT_LIMIT = 4096
 const POLL_TIMEOUT = 50
-const UPDATES = ['message', 'callback_query', 'stopped_message_generation']
+const UPDATES = ['message', 'callback_query', 'stopped_message_generation', 'widget_query']
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const thread = chat => chat.threadId === undefined ? {} : { message_thread_id: chat.threadId }
 const optionLabel = option => option.checked === undefined ? option.label : `${option.checked ? '☑' : '☐'} ${option.label}`
@@ -156,6 +156,17 @@ export default {
     }
 
     const onUpdate = async (update) => {
+      if (update.widget_query !== undefined) {
+        const query = update.widget_query
+        // Acknowledge before cancellation/network work can consume the 15-second deadline.
+        await call('answerWidgetQuery', { widget_query_id: query.id }, { timeout: 10_000 }).catch(error => env.log?.warn?.('ds-bot: widget answer failed: %s', reason(error)))
+        await handlers.onWidgetQuery?.({
+          chat: { key: String(query.chat?.id), kind: query.chat?.type === 'private' ? 'direct' : 'group' },
+          sender: { id: String(query.from?.id ?? ''), languageCode: query.from?.language_code },
+          messageId: query.message_id, data: query.data, type: query.type?.type,
+        })
+        return
+      }
       if (update.stopped_message_generation !== undefined) {
         const event = update.stopped_message_generation
         await handlers.onStop?.({
@@ -291,6 +302,14 @@ export default {
 
     return {
       send,
+      sendStatusPanel: async (chat, { html, data, caption }) => {
+        if (chat.kind !== 'direct') throw new Error('Status widgets require a private chat')
+        const sent = await call('sendWidget', { chat_id: chat.key, ...thread(chat), html, chat_data: data, caption, allow_queries: true })
+        if (!Number.isSafeInteger(sent?.message_id)) throw new Error('Telegram did not return a Status panel identity')
+        await call('pinChatMessage', { chat_id: chat.key, message_id: sent.message_id, disable_notification: true })
+        return { messageId: sent.message_id }
+      },
+      editStatusPanel: (chat, messageId, data) => call('editMessageWidgetData', { chat_id: chat.key, message_id: messageId, chat_data: data }),
       createTopic: async (chat, name) => {
         const topic = await call('createForumTopic', { chat_id: chat.key, name: Array.from(name).slice(0, 128).join('') })
         if (!Number.isSafeInteger(topic?.message_thread_id) || topic.message_thread_id <= 0) throw new Error('Telegram did not return a Topic ID')
