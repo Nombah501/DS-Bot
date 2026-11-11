@@ -117,8 +117,10 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   const connection = existingConnectionId === undefined
     ? await rt.imEndpoint('im-add', { platform: 'telegram', botId: 'a', fields: { token: 'S1-FAKE-TOKEN' } })
     : rt.imView().connections.find(conn => conn.id === existingConnectionId)
-  if (existingConnectionId !== undefined) await rt.imEndpoint('im-retry', { id: existingConnectionId })
-  if (waitForPoll) await request('getUpdates')
+  if (waitForPoll) {
+    await request('getUpdates')
+    await until(() => polls.size === 1, timeout)
+  }
   if (pair) {
     message('hello')
     await request('sendMessage', params => /connection request/.test(params.text))
@@ -130,9 +132,12 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     get activePolls() { return polls.size },
     restart: async () => {
       await ctx.dispose()
+      await until(() => polls.size === 0, timeout)
+      const after = calls.length
       rt = boot()
       await rt.load()
-      await rt.imEndpoint('im-retry', { id: connection.id })
+      await request('getUpdates', () => true, after)
+      await until(() => polls.size === 1, timeout)
     },
     step: (text, data = {}, sessionId = 'a') => sessionEvent('assistant/message', { message: { content: [{ type: 'text', text }] }, ...data }, sessionId),
     assistantStream: (frame, sessionId = 'a') => ctx.emit('agent/assistant-stream', { agent: agentOf(sessionId), frame }),

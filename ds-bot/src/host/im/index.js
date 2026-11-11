@@ -649,11 +649,8 @@ export function install(rt) {
     if (NUMBERS.test(body)) {
       const picked = body.trim().split(/\s+/).map(Number)
       const held = newestOpenCard(conn, msg.chat)
-      if (held !== undefined && imPlatform(conn.platform)?.topics === true
-        && !allows(conn.paired?.find(person => person.id === msg.sender.id), held.entry.target)) {
-        await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
-        return
-      }
+      const denied = held !== undefined && imPlatform(conn.platform)?.topics === true
+        && !allows(conn.paired?.find(person => person.id === msg.sender.id), held.entry.target)
       // Anything that does not clearly answer the newest open card — a stale
       // source, an out-of-range pick, several picks on a single choice — is a
       // normal message for the Bot, never swallowed and never 'stale'.
@@ -663,11 +660,19 @@ export function install(rt) {
           const options = found.question.options ?? []
           const inRange = picked.length > 0 && (found.question.multiSelect === true || picked.length === 1)
             && picked.every(index => options[index - 1] !== undefined)
+          if (inRange && denied) {
+            await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
+            return
+          }
           if (inRange && await answerQuestionCard(conn, msg.chat, held.cardKey, picked.map(index => options[index - 1].label))) return
         }
       } else if (held !== undefined && held.cardKey.startsWith('a:')
         && picked.length === 1 && (picked[0] === 1 || picked[0] === 2)
         && rt.approvalsView().some(entry => `a:${entry.id}` === held.cardKey)) {
+        if (denied) {
+          await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
+          return
+        }
         if (await answerApprovalCard(conn, msg.chat, held.cardKey, picked[0] === 1 ? 'allow' : 'reject', msg.sender)) return
       }
     }

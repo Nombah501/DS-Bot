@@ -181,6 +181,8 @@ test('S1: rebinding a Topic never grants access to its old Cards, including afte
     await s.request('sendMessage', p => /not on your Access list/.test(p.text), after)
     assert.equal(s.rt.state.questions.a?.question, 'Chief decision')
   }
+  s.message('99', { chat: forum, message_thread_id: 40 })
+  assert.equal((await until(() => s.prompts.find(p => p.content?.[0]?.text === '99'))).sessionId, 'b')
   await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: 'all' })
   press(s, data)
   await s.request('editMessageText', p => /Chief decision/.test(p.rich_message?.html) && /type="disabled"/.test(p.rich_message.html))
