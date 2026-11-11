@@ -310,9 +310,9 @@ export default {
         if (chat.kind !== 'direct') throw new Error('Status widgets require a private chat')
         const sent = await call('sendWidget', { chat_id: chat.key, ...thread(chat), html, chat_data: data, caption, allow_queries: true })
         if (!Number.isSafeInteger(sent?.message_id)) throw new Error('Telegram did not return a Status panel identity')
-        await call('pinChatMessage', { chat_id: chat.key, message_id: sent.message_id, disable_notification: true })
         return { messageId: sent.message_id }
       },
+      pinStatusPanel: (chat, messageId) => call('pinChatMessage', { chat_id: chat.key, message_id: messageId, disable_notification: true }),
       editStatusPanel: (chat, messageId, data) => call('editMessageWidgetData', { chat_id: chat.key, message_id: messageId, chat_data: data }),
       createTopic: async (chat, name) => {
         const topic = await call('createForumTopic', { chat_id: chat.key, name: Array.from(name).slice(0, 128).join('') })

@@ -136,6 +136,18 @@ test('S1: private root status supports Russian, waiting Cards and restart withou
   assert.equal(s.calls.slice(after).filter(c => c.method === 'sendWidget').length, 0)
 })
 
+test('S1: a Status panel Telegram could not pin is still the one panel', async t => {
+  const s = await startBridge(t)
+  s.replies.pinChatMessage = { ok: false, error_code: 400, description: 'Bad Request: not enough rights to manage pinned messages in the chat' }
+  s.message('/status')
+  await s.request('pinChatMessage')
+  const after = s.calls.length
+  s.sessionEvent('turn/start', { turn: 1 })
+  s.message('/status')
+  await s.request('editMessageWidgetData', p => JSON.parse(p.chat_data).state === 'Working', after)
+  assert.equal(s.calls.slice(after).filter(c => c.method === 'sendWidget').length, 0)
+})
+
 test('S1: group /status is a rich snapshot with the same progress fields, never a widget', async t => {
   const s = await startBridge(t)
   const chat = { id: -20, type: 'supergroup', title: 'Team' }

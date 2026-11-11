@@ -53,6 +53,12 @@ export function statusPanels(handle, { records, snapshot, valid, save, warn, rec
     record.messageId = sent.messageId
     record.data = content.data
   }
+  // The widget is the panel once Telegram has it, so it is recorded before the pin:
+  // a pin that fails, or a shutdown that cuts it off, must not cost the next /status
+  // a second panel.
+  const pin = async record => {
+    try { await handle.pinStatusPanel?.(record.chat, record.messageId) } catch (error) { warn(error) }
+  }
   const refresh = async record => {
     if (stopped || !valid(record) || inFlight.has(record) || Date.now() < (last.get(record) ?? 0)) return
     const data = JSON.stringify(snapshot(record))
@@ -60,12 +66,15 @@ export function statusPanels(handle, { records, snapshot, valid, save, warn, rec
     inFlight.add(record)
     last.set(record, Date.now() + UPDATE_MS)
     try {
-      if (record.messageId === undefined) await send(record)
-      else {
+      if (record.messageId === undefined) {
+        await send(record)
+        save()
+        await pin(record)
+      } else {
         await handle.editStatusPanel(record.chat, record.messageId, data)
         record.data = data
+        save()
       }
-      save()
     } catch (error) {
       if (error.retryAfter !== undefined) last.set(record, Date.now() + Math.max(UPDATE_MS, Number(error.retryAfter) * 1000))
       warn(error)
@@ -83,6 +92,7 @@ export function statusPanels(handle, { records, snapshot, valid, save, warn, rec
       records.push(record)
       last.set(record, Date.now() + UPDATE_MS)
       save()
+      await pin(record)
     },
     find(chatKey, messageId) { return records.find(record => record.chat.key === chatKey && record.messageId === messageId && valid(record)) },
     stop() { stopped = true; clearInterval(timer) },
