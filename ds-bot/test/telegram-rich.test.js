@@ -72,3 +72,10 @@ test('S1: consecutive numbered items share an ordered list with their original s
   const sent = await s.request('sendRichMessage')
   assert.equal(sent.params.rich_message.html, '<ol start="3"><li>Third</li><li>Fourth</li></ol>\n<ol start="8"><li>Eighth</li><li>Ninth</li></ol>')
 })
+
+test('S1: a header-only Markdown table still reaches Telegram', async t => {
+  const s = await startBridge(t)
+  s.step('| Name | Value |\n| --- | --- |')
+  const sent = await s.request('sendRichMessage')
+  assert.equal(sent.params.rich_message.html, '<table><tr><th>Name</th><th>Value</th></tr></table>')
+})

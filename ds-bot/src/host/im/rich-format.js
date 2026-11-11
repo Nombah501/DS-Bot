@@ -37,6 +37,7 @@ export function chunkRich(markdown, limit = RICH_LIMIT) {
       let rows = header
       let text = line
       let size = length(cells(line).join(''))
+      const bodyStart = at
       while (at < lines.length && lines[at].includes('|') && lines[at].trim() !== '') {
         const row = lines[at++]
         const rowSize = length(cells(row).join(''))
@@ -60,7 +61,7 @@ export function chunkRich(markdown, limit = RICH_LIMIT) {
         text += `\n${row}`
         size += rowSize
       }
-      if (rows !== header) units.push({ text, html: `<table>${rows}</table>`, size })
+      if (rows !== header || at === bodyStart) units.push({ text, html: `<table>${rows}</table>`, size })
     } else if (line.trim() !== '') {
       const heading = /^(#{1,6})\s+(.*)$/.exec(line)
       const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
