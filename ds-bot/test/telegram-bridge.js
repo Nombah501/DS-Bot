@@ -17,7 +17,7 @@ export async function until(read, timeout = 3000) {
   throw new Error('Timed out waiting for Bridge boundary output')
 }
 
-export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId, apiReplies = {}, waitForPoll = true, timeout = 3000 } = {}) {
+export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId, apiReplies = {}, waitForPoll = true, timeout = 3000, locale } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsb-s1-'))
   const calls = []
   const updates = []
@@ -87,15 +87,21 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     })
     return agents.get(id)
   }
-  const context = () => Object.assign(fakeContext(), {
-    llm: { listProviders: () => [] },
-    workspaceRegistry: { get: () => undefined, resolveByPath: async () => undefined, create: async () => ({ id: 'w1' }), archiveSession: async () => {} },
-    sessionController: {
-      prompt: async request => { prompts.push(request); return { ok: true } },
-      resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }), selectModel: async () => {},
-    },
-    sessions: { flush: async () => {} },
-  })
+  let apiRoute
+  const context = () => {
+    const base = fakeContext()
+    const register = base.connection.fetch.register
+    base.connection.fetch.register = route => { apiRoute = route; return register(route) }
+    return Object.assign(base, {
+      llm: { listProviders: () => [] },
+      workspaceRegistry: { get: () => undefined, resolveByPath: async () => undefined, create: async () => ({ id: 'w1' }), archiveSession: async () => {} },
+      sessionController: {
+        prompt: async request => { prompts.push(request); return { ok: true } },
+        resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }), selectModel: async () => {},
+      },
+      sessions: { flush: async () => {} },
+    })
+  }
   const boot = () => createRuntime(ctx = context(), { home, im: { telegram: { api: `http://127.0.0.1:${server.address().port}` } } })
   let rt = boot()
   const request = (method, predicate = () => true, after = 0) => until(() => calls.slice(after).find(call => call.method === method && predicate(call.params)), timeout)
@@ -126,6 +132,11 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     await request('sendMessage', params => /connection request/.test(params.text))
     await rt.imEndpoint('im-pair', { id: connection.id, senderId: '9', allow: true })
     await request('sendMessage', params => /talk to Chief/.test(params.text))
+  }
+  if (locale !== undefined) {
+    const response = await apiRoute.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint: 'state', payload: { locale } }) }))
+    const result = await response.json()
+    if (!result.ok) throw new Error(result.error.message)
   }
   return {
     get ctx() { return ctx }, get rt() { return rt }, home, calls, replies, prompts, agents, agentOf, connection, request, pushUpdate, message, sessionEvent,

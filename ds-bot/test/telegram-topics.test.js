@@ -175,7 +175,8 @@ test('S1: narrowing access prevents further Draft previews and old Card answers'
   const after = s.calls.length
   s.assistantStream({ type: 'chunk', attemptId: 'revoke', revision: 3, index: 1, time: 2, chunk: { type: 'text-delta', index: 0, text: ' forbidden' } }, 'b')
   s.pushUpdate({ callback_query: { id: 'revoked', from: { id: 9, first_name: 'Ann' }, message: { message_id: 20, message_thread_id: 102, chat: { id: 5, type: 'private' } }, data } })
-  await s.request('sendMessage', p => /not on your Access list/.test(p.text), after)
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'revoked' && /not on your Access list/.test(p.text), after)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendMessage' && /not on your Access list/.test(c.params.text)), false)
   await delay(1100)
   assert.equal(s.calls.slice(after).some(call => call.method === 'sendRichMessageDraft'), false)
   assert.equal(s.agentOf('b').followed, undefined)

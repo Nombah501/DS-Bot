@@ -92,7 +92,7 @@ export function install(rt) {
       statusFailed: zh() ? '未发送，请重试。' : 'Not sent. Try again.',
       stop: zh() ? '停止' : 'Stop',
       paired: 'Connected — choose a Topic for the Bot or group.',
-      denied: 'This Bot or group is not on your Access list.',
+      denied: zh() ? '此 Bot 或群组不在你的访问列表中。' : 'This Bot or group is not on your Access list.',
       topicDeleted: zh() ? `话题已关闭：${values.name} 已删除。` : `Topic closed: ${values.name} was deleted.`,
       topicRevoked: zh() ? `话题已关闭：${values.name} 已不在你的访问列表中。` : `Topic closed: ${values.name} is no longer on your Access list.`,
       bindChoose: 'Choose a Bot or group for this Topic.',
@@ -538,13 +538,13 @@ export function install(rt) {
     }
     return undefined
   }
-  const answerQuestionCard = async (conn, chat, cardKey, labels) => {
+  const answerQuestionCard = async (conn, chat, cardKey, labels, action) => {
     const text = textFor(conn, chat)
     const held = openCard(conn, chat, cardKey)
     if (held === undefined) return false
     const found = questionById(held.cardKey.slice(2))
     if (found === undefined) {
-      await sendCardReply(conn, chat, text('stale'))
+      await sendCardReply(conn, chat, text('stale'), action)
       return true
     }
     const valid = labels.filter(label => (found.question.options ?? []).some(option => option.label === label))
@@ -556,7 +556,7 @@ export function install(rt) {
     } catch (error) {
       if (error?.code === 'bot/stale') {
         await settleCard(conn.id, held.cardKey, text('answered'))
-        await sendCardReply(conn, chat, text('stale'))
+        await sendCardReply(conn, chat, text('stale'), action)
         await settledEdits(conn)
         return true
       }
@@ -572,7 +572,7 @@ export function install(rt) {
       sender?.id !== held.entry.receiverUserId
       || (action !== undefined && (action.ephemeralMessageId !== held.entry.ephemeralMessageId || action.receiverUserId !== held.entry.receiverUserId))
     )) {
-      await sendCardReply(conn, chat, text('privateOnly'))
+      await sendCardReply(conn, chat, text('privateOnly'), action)
       return true
     }
     try {
@@ -581,14 +581,17 @@ export function install(rt) {
       await settledEdits(conn)
     } catch (error) {
       if (error?.code === 'bot/stale') {
-        await sendCardReply(conn, chat, text('stale'))
+        await sendCardReply(conn, chat, text('stale'), action)
         return true
       }
       throw error
     }
     return true
   }
-  const sendCardReply = async (conn, chat, body) => sendText(conn, chat, body)
+  const sendCardReply = async (conn, chat, body, action) => {
+    if (conn.platform === 'telegram' && typeof action?.answer === 'function') return action.answer(body)
+    return sendText(conn, chat, body)
+  }
 
   // The chat's newest still-open card, questions and approvals together: a bare
   // number answers whatever arrived last, not always a question.
@@ -602,7 +605,7 @@ export function install(rt) {
     }
     return undefined
   }
-  const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, enqueue, sendText, textFor })
+  const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, enqueue, sendText, sendCardReply, textFor })
 
   const onMessage = (conn) => async (msg) => {
     const text = textFor(conn, msg.sender)
@@ -762,7 +765,7 @@ export function install(rt) {
       const key = data.startsWith('m:') ? `q:${cardKey.slice(2)}` : cardKey
       const target = openCard(conn, chat, key, action)?.entry.target
       if (!allows(conn.paired?.find(person => person.id === action.sender.id), target)) {
-        await sendCardReply(conn, chat, text(target === undefined ? 'stale' : 'denied'))
+        await sendCardReply(conn, chat, text(target === undefined ? 'stale' : 'denied'), action)
         return
       }
     }
@@ -772,17 +775,17 @@ export function install(rt) {
       const found = questionById(cardKey.slice(2))
       const handle = runners.get(conn.id)?.handle
       if (found?.question.multiSelect !== true || held?.entry.card === undefined || typeof handle?.editCard !== 'function') {
-        await sendCardReply(conn, chat, text('stale'))
+        await sendCardReply(conn, chat, text('stale'), action)
         return
       }
       const { entry } = held
       if (choice === 'done') {
         const selected = entry.card.options.filter(option => option.checked === true).map(option => option.label)
         if (selected.length === 0) {
-          await sendCardReply(conn, chat, text('selectOne'))
+          await sendCardReply(conn, chat, text('selectOne'), action)
           return
         }
-        if (!(await answerQuestionCard(conn, chat, key, selected))) await sendCardReply(conn, chat, text('stale'))
+        if (!(await answerQuestionCard(conn, chat, key, selected, action))) await sendCardReply(conn, chat, text('stale'), action)
         return
       }
       const option = /^\d+$/.test(choice) ? entry.card.options[Number(choice)] : undefined
@@ -796,15 +799,15 @@ export function install(rt) {
       const found = questionById(cardKey.slice(2))
       const label = found?.question.options?.[Number(choice)]?.label
       if (label === undefined) {
-        await sendCardReply(conn, chat, text('stale'))
+        await sendCardReply(conn, chat, text('stale'), action)
         return
       }
-      if (!(await answerQuestionCard(conn, chat, cardKey, [label]))) await sendCardReply(conn, chat, text('stale'))
+      if (!(await answerQuestionCard(conn, chat, cardKey, [label], action))) await sendCardReply(conn, chat, text('stale'), action)
       return
     }
     if (data.startsWith('a:') && cut > 2) {
       if (choice === 'allow' || choice === 'reject') {
-        if (!(await answerApprovalCard(conn, chat, cardKey, choice, action.sender, action))) await sendCardReply(conn, chat, text('stale'))
+        if (!(await answerApprovalCard(conn, chat, cardKey, choice, action.sender, action))) await sendCardReply(conn, chat, text('stale'), action)
       }
     }
   }

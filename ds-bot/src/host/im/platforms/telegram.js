@@ -207,16 +207,29 @@ export default {
         const message = query.message ?? {}
         const chat = message.chat ?? {}
         const from = query.from ?? {}
-        await call('answerCallbackQuery', { callback_query_id: query.id }).catch(() => {})
-        await handlers.onAction({
-          chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
-          sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
-          data: String(query.data ?? ''),
-          messageId: message.message_id,
-          callbackQueryId: query.id,
-          ephemeralMessageId: message.ephemeral_message_id,
-          receiverUserId: message.receiver_user?.id === undefined ? undefined : String(message.receiver_user.id),
-        })
+        let answered
+        const answer = text => {
+          answered ??= call('answerCallbackQuery', { callback_query_id: query.id, ...(text === undefined ? {} : { text }) }, { timeout: 10_000 })
+            .catch(error => env.log?.warn?.('ds-bot: callback answer failed: %s', reason(error)))
+          return answered
+        }
+        // Core may wait on disk or DSH; never leave the callback spinner waiting with it.
+        const timer = setTimeout(() => { void answer() }, 1000)
+        try {
+          await handlers.onAction({
+            chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
+            sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
+            data: String(query.data ?? ''),
+            messageId: message.message_id,
+            callbackQueryId: query.id,
+            ephemeralMessageId: message.ephemeral_message_id,
+            receiverUserId: message.receiver_user?.id === undefined ? undefined : String(message.receiver_user.id),
+            answer,
+          })
+        } finally {
+          clearTimeout(timer)
+          await answer()
+        }
       }
     }
 

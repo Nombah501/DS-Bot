@@ -3,16 +3,16 @@ import { accessTargets, allows, addressKey } from './topics.js'
 
 // Bind Cards belong to their requesting person and physical Topic, not the
 // Topic's current target: an unbound/inaccessible Topic must still be bindable.
-export function forumBinder(rt, { handleOf, enqueue, sendText, textFor }) {
+export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, textFor }) {
   const nameOf = target => (target.botId === undefined ? rt.roomOf(target.roomId) : rt.botOf(target.botId))?.name
-  const admin = async (conn, chat, sender) => {
+  const admin = async (conn, chat, sender, action) => {
     const handle = handleOf(conn.id)
     try {
       if (typeof handle?.isAdmin === 'function' && await handle.isAdmin(chat, sender.id)) return true
     } catch (error) {
       rt.warn('ds-bot: forum admin check failed: %s', rt.redactSecrets(String(error?.message ?? error)))
     }
-    sendText(conn, chat, textFor(conn, sender)('bindAdmin'))
+    await sendCardReply(conn, chat, textFor(conn, sender)('bindAdmin'), action)
     return false
   }
   return {
@@ -51,14 +51,14 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, textFor }) {
       const match = /^b:([^:]+):(\d+)$/.exec(action.data)
       const target = match && held?.id === match[1] ? held.targets[Number(match[2])] : undefined
       if (saved?.isForum !== true || held?.settled || held?.senderId !== action.sender.id || target === undefined || nameOf(target) === undefined) {
-        sendText(conn, action.chat, text('stale'))
+        await sendCardReply(conn, action.chat, text('stale'), action)
         return
       }
       if (!allows(conn.paired?.find(person => person.id === action.sender.id), target)) {
-        sendText(conn, action.chat, text('denied'))
+        await sendCardReply(conn, action.chat, text('denied'), action)
         return
       }
-      if (!await admin(conn, action.chat, action.sender)) return
+      if (!await admin(conn, action.chat, action.sender, action)) return
       // Recheck after the network boundary; access or the Card may have changed.
       if (saved.bindCards[key] !== held || held.settled || !allows(conn.paired?.find(person => person.id === action.sender.id), target) || nameOf(target) === undefined) return
       held.settled = true

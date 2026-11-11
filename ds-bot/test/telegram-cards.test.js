@@ -60,7 +60,8 @@ test('S1: a Telegram answer settles the Card to only the selected disabled butto
   assert.equal(edited.params.rich_message.html.includes('>Daily</tg-button>'), false)
   await until(() => s.agents.get('a')?.followed === 1)
   press(s, option.data, 'stale-choice')
-  await s.request('sendMessage', p => p.text === 'This card was already answered.')
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'stale-choice' && p.text === 'This card was already answered.')
+  assert.equal(s.calls.some(c => c.method === 'sendMessage' && c.params.text === 'This card was already answered.'), false)
   assert.equal(s.agents.get('a').followed, 1)
 })
 

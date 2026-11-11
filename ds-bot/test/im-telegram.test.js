@@ -116,9 +116,53 @@ test('callback_query answers the query and reports the action', async () => {
     await until(() => got.actions.length === 1)
     assert.equal(got.actions[0].data, 'a:x:allow')
     assert.equal(got.actions[0].messageId, 44)
-    assert.ok(api.calls.some(call => call.method === 'answerCallbackQuery' && call.params.callback_query_id === 'cq1'))
+    await until(() => api.calls.some(call => call.method === 'answerCallbackQuery' && call.params.callback_query_id === 'cq1'))
+    assert.equal(api.calls.filter(call => call.method === 'answerCallbackQuery' && call.params.callback_query_id === 'cq1').length, 1)
     handle.stop()
   } finally { api.close() }
+})
+
+for (const failure of ['slow', 'throw', 'reject']) {
+  test(`callback_query is answered once even when core is ${failure}`, async t => {
+    const api = await fakeApi()
+    api.holdPoll = true
+    let release
+    const pending = new Promise(resolve => { release = resolve })
+    t.after(() => { release(); api.close() })
+    const handle = telegram.connect({ token: 'TOKEN' }, env(api.api), {
+      onMessage() {}, onStatus() {},
+      onAction(action) {
+        if (failure === 'throw') throw new Error('Core failed')
+        if (failure === 'reject') return Promise.reject(new Error('Core rejected'))
+        return pending.then(() => action.answer('Too late'))
+      },
+    })
+    t.after(() => handle.stop())
+    api.updates.push({ update_id: 1, callback_query: { id: failure, from: { id: 9 }, data: 'q:x:0', message: { message_id: 44, chat: { id: 5, type: 'private' } } } })
+    const answer = await until(() => api.calls.find(call => call.method === 'answerCallbackQuery'), 250)
+    assert.deepEqual(answer.params, { callback_query_id: failure })
+    release()
+    await until(() => api.calls.filter(call => call.method === 'getUpdates').length >= 2)
+    assert.equal(api.calls.filter(call => call.method === 'answerCallbackQuery').length, 1)
+  })
+}
+
+test('callback toast wins the acknowledgement once, even if Telegram rejects it', async t => {
+  const api = await fakeApi()
+  api.holdPoll = true
+  api.replies.answerCallbackQuery = { error: 400, description: 'Query is too old' }
+  t.after(() => api.close())
+  const handle = telegram.connect({ token: 'TOKEN' }, env(api.api), {
+    onMessage() {}, onStatus() {},
+    async onAction(action) {
+      await action.answer('Select at least one option.')
+      await action.answer('Duplicate')
+    },
+  })
+  t.after(() => handle.stop())
+  api.updates.push({ update_id: 1, callback_query: { id: 'toast', from: { id: 9 }, data: 'm:x:done', message: { message_id: 44, chat: { id: 5, type: 'private' } } } })
+  await until(() => api.calls.filter(call => call.method === 'getUpdates').length >= 2)
+  assert.deepEqual(api.calls.filter(call => call.method === 'answerCallbackQuery').map(call => call.params), [{ callback_query_id: 'toast', text: 'Select at least one option.' }])
 })
 
 test('send renders HTML, chunks long text, buttons go on the last chunk', async () => {

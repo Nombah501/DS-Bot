@@ -4,8 +4,8 @@ import { startBridge, until } from './telegram-bridge.js'
 
 const group = { id: -50, type: 'supergroup', title: 'Team' }
 const actionOf = sent => /data="([^"]*:allow)"/.exec(sent.params.rich_message.html)[1]
-const press = (s, sent, senderId = 9, extra = {}) => s.pushUpdate({ callback_query: {
-  id: `private-${senderId}`, from: { id: senderId, first_name: 'Person', language_code: 'en' },
+const press = (s, sent, senderId = 9, extra = {}, language = 'en') => s.pushUpdate({ callback_query: {
+  id: `private-${senderId}`, from: { id: senderId, first_name: 'Person', language_code: language },
   message: { message_id: 0, chat: group, ephemeral_message_id: 701, receiver_user: { id: 9 }, ...extra },
   data: actionOf(sent),
 } })
@@ -42,25 +42,33 @@ test('S1: a group approval is private to the paired person who started its turn'
   assert.match(edited.params.rich_message.html, /type="disabled"[^>]*>Allow once/)
 })
 
-test('S1: another paired person cannot answer a Private card by button or number', async t => {
-  const s = await startBridge(t)
-  ephemeral(s)
-  s.message('hello', { from: { id: 10, first_name: 'Bob' } })
-  await until(() => s.rt.imView().connections[0].requests.some(p => p.id === '10'))
-  await s.rt.imEndpoint('im-pair', { id: s.connection.id, senderId: '10', allow: true })
-  await startGroupTurn(s)
-  const outcome = approve(t, s)
-  const sent = await s.request('sendRichMessage', p => p.chat_id === '-50' && p.rich_message.html.includes('asks for approval'))
-  press(s, sent, 10)
-  await s.request('sendMessage', p => /Only the Initiator/.test(p.text))
-  const after = s.calls.length
-  s.message('@fakebot 1', { chat: group, from: { id: 10, first_name: 'Bob', language_code: 'ru' } })
-  await s.request('sendMessage', p => /Только инициатор/.test(p.text), after)
-  assert.equal(s.prompts.length, 1)
-  assert.equal(s.rt.approvalsView().length, 1)
-  press(s, sent)
-  assert.deepEqual(await outcome, ['allowed-once'])
-})
+for (const [language, locale, notice] of [
+  ['en', 'en', 'Only the Initiator can answer this card.'],
+  ['ru-RU', 'en', 'Только инициатор может ответить на эту карточку.'],
+  ['zh-CN', 'zh-CN', '只有发起人可以回答这张卡。'],
+]) {
+  test(`S1: another paired person cannot answer a Private card by button or number in ${language}`, async t => {
+    const s = await startBridge(t, { locale })
+    ephemeral(s)
+    s.message('hello', { from: { id: 10, first_name: 'Bob' } })
+    await until(() => s.rt.imView().connections[0].requests.some(p => p.id === '10'))
+    await s.rt.imEndpoint('im-pair', { id: s.connection.id, senderId: '10', allow: true })
+    await startGroupTurn(s)
+    const outcome = approve(t, s)
+    const sent = await s.request('sendRichMessage', p => p.chat_id === '-50' && /asks for approval|请你审批/.test(p.rich_message.html))
+    const beforePress = s.calls.length
+    press(s, sent, 10, {}, language)
+    await s.request('answerCallbackQuery', p => p.callback_query_id === 'private-10' && p.text === notice)
+    assert.equal(s.calls.slice(beforePress).some(c => c.method === 'sendMessage' && c.params.text === notice), false)
+    const after = s.calls.length
+    s.message('@fakebot 1', { chat: group, from: { id: 10, first_name: 'Bob', language_code: 'ru' } })
+    await s.request('sendMessage', p => /Только инициатор/.test(p.text), after)
+    assert.equal(s.prompts.length, 1)
+    assert.equal(s.rt.approvalsView().length, 1)
+    press(s, sent)
+    assert.deepEqual(await outcome, ['allowed-once'])
+  })
+}
 
 test('S1: an unanswered Private card becomes public after five minutes and settles there', async t => {
   const s = await startBridge(t)

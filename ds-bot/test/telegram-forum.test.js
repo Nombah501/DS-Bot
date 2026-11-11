@@ -123,21 +123,24 @@ test('S1: /bind requires current Telegram admin rights and current Access list; 
   const sent = await s.request('sendRichMessage', p => /Choose a Bot/.test(p.rich_message.html), after)
   const data = choice(sent, 'Writer')
   press(s, data, 41)
-  await s.request('sendMessage', p => p.message_thread_id === 41 && /already answered/.test(p.text), after)
+  await s.request('answerCallbackQuery', p => /already answered/.test(p.text), after)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendMessage' && /already answered/.test(c.params.text)), false)
   await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: [] } })
   press(s, data)
-  await s.request('sendMessage', p => /not on your Access list/.test(p.text), after)
+  await s.request('answerCallbackQuery', p => /not on your Access list/.test(p.text), after)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendMessage' && /not on your Access list/.test(c.params.text)), false)
   await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: 'all' })
   s.replies.getChatMember = { ok: true, result: { status: 'member' } }
   after = s.calls.length
   press(s, data)
-  await s.request('sendMessage', p => /administrator rights/.test(p.text), after)
+  await s.request('answerCallbackQuery', p => /administrator rights/.test(p.text), after)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendMessage' && /administrator rights/.test(c.params.text)), false)
   s.replies.getChatMember = { ok: true, result: { status: 'administrator' } }
   press(s, data)
   await s.request('editMessageText', p => /Topic bound to Writer/.test(p.rich_message?.html), after)
   after = s.calls.length
   press(s, data)
-  await s.request('sendMessage', p => /already answered/.test(p.text), after)
+  await s.request('answerCallbackQuery', p => /already answered/.test(p.text), after)
   await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: [] } })
   s.message('Denied input', { chat: forum, message_thread_id: 40 })
   await s.request('sendMessage', p => /not on your Access list/.test(p.text), after)
@@ -188,10 +191,10 @@ test('S1: rebinding a Topic never grants access to its old Cards, including afte
   await bind(s, 'Writer')
   await s.restart()
   await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['b'], roomIds: [] } })
-  for (const answer of [() => press(s, data), () => s.message('1', { chat: forum, message_thread_id: 40 })]) {
+  for (const [method, answer] of [['answerCallbackQuery', () => press(s, data)], ['sendMessage', () => s.message('1', { chat: forum, message_thread_id: 40 })]]) {
     const after = s.calls.length
     answer()
-    await s.request('sendMessage', p => /not on your Access list/.test(p.text), after)
+    await s.request(method, p => /not on your Access list/.test(p.text), after)
     assert.equal(s.rt.state.questions.a?.question, 'Chief decision')
   }
   s.message('99', { chat: forum, message_thread_id: 40 })

@@ -24,7 +24,7 @@ test('S1: Russian pairing, cards, Stop and callback notices follow the sender', 
   const card = await s.request('sendRichMessage', p => p.rich_message.html.includes('Chief спрашивает: '))
   assert.match(card.params.rich_message.html, /ответьте номером/)
   s.pushUpdate({ callback_query: { id: 'stale-ru', from, data: 'q:missing:0', message: { message_id: 10, chat: { id: 5, type: 'private' } } } })
-  await s.request('sendMessage', p => p.text === 'На эту карточку уже ответили.')
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'stale-ru' && p.text === 'На эту карточку уже ответили.')
   const controller = new AbortController()
   t.after(() => controller.abort())
   const outcome = s.approval({ agent: s.agentOf('a'), toolName: 'bash', reason: 'Inspect report', signal: controller.signal })
