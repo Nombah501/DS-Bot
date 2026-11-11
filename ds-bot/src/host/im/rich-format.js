@@ -14,12 +14,13 @@ const delimiter = line => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.te
 export function chunkRich(markdown, limit = RICH_LIMIT) {
   const lines = String(markdown ?? '').split('\n')
   const units = []
-  const add = (text, render) => {
+  const add = (text, render, literal = false) => {
     const points = Array.from(text)
-    if (length(text) <= limit) units.push({ text, html: render(text), size: length(text) })
+    const size = literal ? points.length : length(text)
+    if (size <= limit) units.push({ text, html: render(text), size })
     else for (let at = 0; at < points.length; at += limit) {
       const part = points.slice(at, at + limit).join('')
-      units.push({ text: part, html: render(part), size: length(part) })
+      units.push({ text: part, html: render(part), size: literal ? Array.from(part).length : length(part) })
     }
   }
   for (let at = 0; at < lines.length;) {
@@ -29,7 +30,7 @@ export function chunkRich(markdown, limit = RICH_LIMIT) {
       const body = []
       while (at < lines.length && !/^```\s*$/.test(lines[at])) body.push(lines[at++])
       if (at < lines.length) at++
-      add(body.join('\n'), text => `<pre><code${fence[1] ? ` class="language-${escape(fence[1])}"` : ''}>${escape(text)}</code></pre>`)
+      add(body.join('\n'), text => `<pre><code${fence[1] ? ` class="language-${escape(fence[1])}"` : ''}>${escape(text)}</code></pre>`, true)
     } else if (line.includes('|') && at < lines.length && delimiter(lines[at])) {
       at++
       const header = `<tr>${cells(line).map(cell => `<th>${inlineHtml(cell)}</th>`).join('')}</tr>`

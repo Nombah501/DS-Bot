@@ -53,3 +53,15 @@ test('S1: DS Bot room lines use the same rich path', async t => {
   const sent = await s.request('sendRichMessage')
   assert.equal(sent.params.rich_message.html, '<p><b>Chief</b>: Room <b>report</b></p>')
 })
+
+test('S1: fenced code counts Markdown markers literally against the rich message limit', async t => {
+  const s = await startBridge(t)
+  const code = '**literal**\n'.repeat(3000)
+  s.step(`\`\`\`md\n${code}\`\`\``)
+  await s.request('sendRichMessage', p => p.rich_message.html.includes('literal') && p.rich_message.html.length < 5000)
+  const html = s.calls.filter(c => c.method === 'sendRichMessage').map(c => c.params.rich_message.html)
+  assert.equal(html.length, 2)
+  const bodies = html.map(value => /^<pre><code class="language-md">([\s\S]*)<\/code><\/pre>$/.exec(value)[1])
+  assert.ok(bodies.every(value => Array.from(value).length <= 32768))
+  assert.equal(bodies.join(''), code.trimEnd())
+})
