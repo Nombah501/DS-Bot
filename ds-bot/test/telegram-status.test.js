@@ -170,3 +170,28 @@ test('S1: room Topic status Stop cancels room work, and revoked panels cannot st
   await delay(1100)
   assert.equal(s.calls.slice(after).filter(c => c.method === 'editMessageWidgetData' || (c.method === 'sendMessage' && c.params.text === 'Stopped.')).length, 0)
 })
+
+test('S1: a Topic reconciliation failure cannot leave an unreachable poller after disconnect', async t => {
+  const seed = team()
+  seed.im = { connections: { im_start: {
+    id: 'im_start', platform: 'telegram', botId: 'a', account: { id: '7', name: '@fakebot', hasTopicsEnabled: true },
+    settings: { token: 'S1-FAKE-TOKEN' }, secrets: {}, enabled: true,
+    paired: [{ id: '9', name: 'Ann', access: 'all', at: 1 }], requests: [],
+    chats: { 5: { kind: 'direct', personId: '9', at: 1 } }, createdAt: 1,
+  } } }
+  const s = await startBridge(t, {
+    seed, pair: false, existingConnectionId: 'im_start', waitForPoll: false,
+    getMe: { id: 7, username: 'fakebot', is_bot: true, has_topics_enabled: true },
+    apiReplies: { createForumTopic: { ok: false, error_code: 403, description: 'Topics temporarily unavailable' } },
+  })
+  await s.request('createForumTopic')
+  await s.rt.imEndpoint('im-update', { id: s.connection.id, enabled: false })
+  await until(() => s.activePolls === 0)
+  const after = s.calls.length
+  s.replies.createForumTopic = undefined
+  await s.rt.imEndpoint('im-update', { id: s.connection.id, enabled: true })
+  await s.request('getUpdates', () => true, after)
+  await until(() => s.activePolls === 1)
+  s.message('/status', { message_thread_id: 1 })
+  await s.request('sendWidget', p => p.message_thread_id === 1, after)
+})

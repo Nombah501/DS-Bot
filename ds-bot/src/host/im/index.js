@@ -1062,7 +1062,7 @@ export function install(rt) {
       }
       await diffCards()
     } catch (error) {
-      runners.delete(conn.id)
+      if (runners.get(conn.id) === runner) await stop(conn.id)
       setStatus(conn.id, { state: 'error', error: String(error?.message ?? error).slice(0, 300), at: Date.now() })
     }
   }

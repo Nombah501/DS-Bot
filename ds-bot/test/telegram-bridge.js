@@ -17,11 +17,11 @@ export async function until(read, timeout = 3000) {
   throw new Error('Timed out waiting for Bridge boundary output')
 }
 
-export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId } = {}) {
+export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId, apiReplies = {}, waitForPoll = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsb-s1-'))
   const calls = []
   const updates = []
-  const replies = {}
+  const replies = { ...apiReplies }
   const polls = new Set()
   let updateId = 0
   let messageId = 0
@@ -118,7 +118,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     ? await rt.imEndpoint('im-add', { platform: 'telegram', botId: 'a', fields: { token: 'S1-FAKE-TOKEN' } })
     : rt.imView().connections.find(conn => conn.id === existingConnectionId)
   if (existingConnectionId !== undefined) await rt.imEndpoint('im-retry', { id: existingConnectionId })
-  await request('getUpdates')
+  if (waitForPoll) await request('getUpdates')
   if (pair) {
     message('hello')
     await request('sendMessage', params => /connection request/.test(params.text))
@@ -127,6 +127,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   }
   return {
     get ctx() { return ctx }, get rt() { return rt }, home, calls, replies, prompts, agents, agentOf, connection, request, pushUpdate, message, sessionEvent,
+    get activePolls() { return polls.size },
     restart: async () => {
       await ctx.dispose()
       rt = boot()
