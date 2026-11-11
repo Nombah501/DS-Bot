@@ -105,3 +105,46 @@ test('S1: group Cards follow the last speaker but a Private card follows its Ini
   assert.deepEqual(await outcome, ['allowed-once'])
   await s.request('editEphemeralMessageText', p => /— Разрешить один раз/.test(p.rich_message.html))
 })
+
+test('S1: group Status Stop labels, outcomes and refusals honour /lang across devices', async t => {
+  const s = await startBridge(t)
+  const group = { id: -70, type: 'supergroup', title: 'Status team' }
+  await command(s, '@fakebot /start', 'This group is not bound', { chat: group })
+  await s.rt.imEndpoint('im-chat', { id: s.connection.id, chatKey: '-70', target: { botId: 'a' } })
+  await command(s, '/lang ru', 'Язык: ru.')
+  let messageId = 880
+  s.replies.sendRichMessage = () => ({ ok: true, result: { message_id: messageId } })
+  const status = async language => {
+    const after = s.calls.length
+    s.message('/status@fakebot', { chat: group, from: from(language) })
+    return s.request('sendRichMessage', p => p.chat_id === '-70', after)
+  }
+  const press = async (id, sent, language, expected, copyId = messageId) => {
+    const after = s.calls.length
+    const data = /data="([^"]*:stop)"/.exec(sent.params.rich_message.html)[1]
+    s.pushUpdate({ callback_query: {
+      id, from: from(language), data,
+      message: { message_id: copyId, chat: group },
+    } })
+    await s.request('answerCallbackQuery', p => p.callback_query_id === id, after)
+    return s.request('sendMessage', p => p.text === expected, after)
+  }
+  s.sessionEvent('turn/start', { turn: 1 })
+  const russian = await status('en')
+  assert.match(russian.params.rich_message.html, /Работает.*Остановить/s)
+  await press('wrong-message-en', russian, 'en', 'Сейчас ничего не выполняется.', 881)
+  assert.notEqual(s.agentOf('a').cancelled, true)
+  await press('stop-en', russian, 'en', 'Остановлено.')
+  await until(() => s.agentOf('a').cancelled)
+  await s.request('editMessageText', p => p.message_id === 880 && /— Остановлено/.test(p.rich_message.html))
+  await press('repeat-en', russian, 'en', 'Сейчас ничего не выполняется.')
+  await command(s, '/lang en', 'Language: en.', { from: from('ru') })
+  s.sessionEvent('turn/start', { turn: 2 })
+  messageId = 882
+  const english = await status('ru')
+  assert.match(english.params.rich_message.html, /Working.*>Stop</s)
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: [], roomIds: [] } })
+  await press('denied-ru', english, 'ru', 'This Bot or group is not on your Access list.')
+  await command(s, '/lang ru', 'Язык: ru.')
+  await press('denied-en', english, 'en', 'Этот Bot или группа не входят в ваш список доступа.')
+})
