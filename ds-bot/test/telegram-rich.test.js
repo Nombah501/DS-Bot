@@ -65,3 +65,10 @@ test('S1: fenced code counts Markdown markers literally against the rich message
   assert.ok(bodies.every(value => Array.from(value).length <= 32768))
   assert.equal(bodies.join(''), code.trimEnd())
 })
+
+test('S1: consecutive numbered items share an ordered list with their original start', async t => {
+  const s = await startBridge(t)
+  s.step('3. Third\n4. Fourth\n\n8. Eighth\n9. Ninth')
+  const sent = await s.request('sendRichMessage')
+  assert.equal(sent.params.rich_message.html, '<ol start="3"><li>Third</li><li>Fourth</li></ol>\n<ol start="8"><li>Eighth</li><li>Ninth</li></ol>')
+})

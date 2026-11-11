@@ -64,10 +64,36 @@ export function chunkRich(markdown, limit = RICH_LIMIT) {
     } else if (line.trim() !== '') {
       const heading = /^(#{1,6})\s+(.*)$/.exec(line)
       const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
-      const ordered = /^\s*\d+[.)]\s+(.*)$/.exec(line)
+      const ordered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line)
       const quote = /^>\s?(.*)$/.exec(line)
       const tag = heading ? `h${heading[1].length}` : quote ? 'blockquote' : 'p'
-      if (bullet || ordered) add((bullet || ordered)[1], text => `<${bullet ? 'ul' : 'ol'}><li>${inlineHtml(text)}</li></${bullet ? 'ul' : 'ol'}>`)
+      if (ordered) {
+        const first = units.length
+        let item = ordered
+        let number = Number(ordered[1])
+        do {
+          const before = units.length
+          add(item[2], text => `<li>${inlineHtml(text)}</li>`)
+          for (let index = before; index < units.length; index++) units[index].number = number
+          number++
+          item = at < lines.length ? /^\s*(\d+)[.)]\s+(.*)$/.exec(lines[at]) : undefined
+          if (item) at++
+        } while (item)
+        const items = units.splice(first)
+        let group
+        for (const part of items) {
+          if (group === undefined || group.size + part.size + 1 > limit) {
+            if (group !== undefined) group.html += '</ol>'
+            group = { text: part.text, html: `<ol start="${part.number}">${part.html}`, size: part.size }
+            units.push(group)
+          } else {
+            group.text += `\n${part.text}`
+            group.html += part.html
+            group.size += part.size + 1
+          }
+        }
+        if (group !== undefined) group.html += '</ol>'
+      } else if (bullet) add(bullet[1], text => `<ul><li>${inlineHtml(text)}</li></ul>`)
       else add(heading?.[2] ?? quote?.[1] ?? line, text => `<${tag}>${inlineHtml(text)}</${tag}>`)
     }
   }
