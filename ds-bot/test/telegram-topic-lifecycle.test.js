@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { startBridge } from './telegram-bridge.js'
+import { startBridge, until } from './telegram-bridge.js'
 
 const team = () => ({
   version: 1, mainBotIds: ['a'],
@@ -194,7 +194,7 @@ test('S1: private Topic lifecycle leaves admin-managed forum bindings intact', a
   s.step('Missing forum Topic', {}, 'b')
   await s.request('sendRichMessage', p => p.chat_id === '-60' && /Missing forum Topic/.test(p.rich_message.html), after)
   s.message('/stop', { chat: forum, message_thread_id: 40 })
-  await s.request('sendMessage', p => p.chat_id === '-60' && /Nothing is running/.test(p.text), after)
+  await s.request('sendMessage', p => p.chat_id === '-60' && p.text === 'Stopped.', after)
   await s.rt.deleteBot('b')
   await s.request('closeForumTopic', p => p.chat_id === '5' && p.message_thread_id === 102, after)
   assert.equal(s.calls.slice(after).some(call => ['createForumTopic', 'editForumTopic', 'closeForumTopic'].includes(call.method) && call.params.chat_id === '-60'), false)

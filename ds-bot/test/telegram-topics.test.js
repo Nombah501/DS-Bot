@@ -125,6 +125,7 @@ test('S1: an existing connection keeps its Default Bot and migrates paired peopl
   } } }
   const s = await startBridge(t, { seed, pair: false, existingConnectionId: 'im_legacy' })
   assert.equal(s.rt.imView().connections[0].paired[0].access, 'all')
+  assert.equal(s.rt.imView().connections[0].nonTelegramTurns, 'all')
   s.message('Legacy Default Bot', { from: { id: 5, first_name: 'Ann' } })
   const prompt = await until(() => s.prompts.find(p => p.content?.[0]?.text === 'Legacy Default Bot'))
   assert.equal(prompt.sessionId, 'b')

@@ -4,8 +4,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { startBridge, until } from './telegram-bridge.js'
 
 const forum = { id: -60, type: 'supergroup', title: 'Forum', is_forum: true }
-const setup = async t => {
-  const s = await startBridge(t, { pair: false, getMe: { id: 7, username: 'fakebot', is_bot: true, has_topics_enabled: true } })
+const setup = async (t, seed) => {
+  const s = await startBridge(t, { seed, pair: false, getMe: { id: 7, username: 'fakebot', is_bot: true, has_topics_enabled: true } })
   s.replies.createForumTopic = { ok: true, result: { message_thread_id: 101 } }
   s.message('hello')
   await s.request('sendMessage', p => /connection request/.test(p.text))
@@ -139,4 +139,59 @@ test('S1: invalid autonomous settings leave the connection unchanged', async t =
   const s = await setup(t)
   await assert.rejects(s.rt.imEndpoint('im-update', { id: s.connection.id, nonTelegramTurns: 'groups' }), /Choose all messages/)
   assert.equal(s.rt.imView().connections[0].nonTelegramTurns, 'all')
+})
+
+test('S1: a Bot origin stays on its connection, while autonomous work reaches each accessible private place', async t => {
+  const seed = {
+    version: 1, mainBotIds: ['a'], bots: { a: { id: 'a', name: 'Chief', sessionId: 'a', createdAt: 1 } },
+    rooms: {}, agents: {}, exchanges: [], exchangeTurns: {}, questions: {}, prefs: {}, revision: 0,
+    im: { connections: { im_other: {
+      id: 'im_other', platform: 'telegram', botId: 'a', enabled: false, settings: { token: 'S1-OTHER-FAKE-TOKEN' }, secrets: {},
+      paired: [{ id: '10', name: 'Bob', access: 'all', at: 1 }], requests: [],
+      chats: { 10: { kind: 'direct', personId: '10', topics: { 201: { target: { botId: 'a' }, name: 'Chief', at: 1 } } } },
+      account: { id: '8', name: 'Other', hasTopicsEnabled: true }, createdAt: 1,
+    } } },
+  }
+  const s = await setup(t, seed)
+  await begin(s, { chat: forum, message_thread_id: 40 })
+  await s.rt.imEndpoint('im-update', { id: 'im_other', enabled: true })
+  const after = s.calls.length
+  s.step('Connection-local step')
+  await s.request('sendRichMessage', p => /Connection-local/.test(p.rich_message.html), after)
+  await delay(80)
+  assert.deepEqual(outputs(s, after, 'Connection-local step'), [['-60', 40]])
+  s.sessionEvent('turn/start', { turn: 2 })
+  s.step('Autonomous across connections')
+  await s.request('sendRichMessage', p => p.chat_id === '10' && /Autonomous across/.test(p.rich_message.html), after)
+  await s.request('sendRichMessage', p => p.chat_id === '5' && /Autonomous across/.test(p.rich_message.html), after)
+  assert.deepEqual(outputs(s, after, 'Autonomous across connections').sort(), [['10', 201], ['5', 101]])
+})
+
+test('S1: revoked origin and new Draft chunks fall back without leaking to other group places', async t => {
+  const s = await setup(t)
+  await begin(s, { chat: forum, message_thread_id: 40 })
+  stream(s)
+  await s.rt.imEndpoint('im-chat', { id: s.connection.id, chatKey: '-60', remove: true })
+  const after = s.calls.length
+  s.assistantStream({ type: 'chunk', attemptId: 'draft', revision: 3, index: 1, time: 2, chunk: { type: 'text-delta', index: 0, text: ' after unbinding' } })
+  const draft = await s.request('sendRichMessageDraft', () => true, after)
+  assert.equal(draft.params.chat_id, 5)
+  assert.equal(draft.params.message_thread_id, 101)
+  assert.match(draft.params.rich_message.html, /after unbinding/)
+})
+
+for (const place of ['forum', 'private']) test(`S1: secret and view Cards follow the ${place} origin`, async t => {
+  const s = await setup(t)
+  await begin(s, place === 'forum' ? { chat: forum, message_thread_id: 40 } : { message_thread_id: 101 })
+  const after = s.calls.length
+  await s.rt.teamTools.find(tool => tool.name === 'request_secret').execute({ name: 'ORIGIN_KEY', purpose: 'Origin test' }, { agent: { id: 'a' }, callId: 'secret-origin', concludeTurn() {} })
+  await s.rt.teamTools.find(tool => tool.name === 'show_view').execute({ title: 'Origin view', view: { type: 'options', id: 'pick', options: [{ label: 'Yes' }] }, wait: true }, { agent: { id: 'a' }, callId: 'view-origin', concludeTurn() {} })
+  const secret = await s.request('sendMessage', p => /ORIGIN_KEY/.test(p.text), after)
+  const view = await s.request('sendMessage', p => /Origin view/.test(p.text), after)
+  await delay(80)
+  for (const sent of [secret, view]) {
+    assert.equal(sent.params.chat_id, place === 'forum' ? '-60' : '5')
+    assert.equal(sent.params.message_thread_id, place === 'forum' ? 40 : 101)
+  }
+  assert.equal(s.calls.slice(after).filter(call => call.method === 'sendMessage' && /ORIGIN_KEY|Origin view/.test(call.params.text)).length, 2)
 })
