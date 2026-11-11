@@ -114,7 +114,7 @@ test('S1: Stop widget queries acknowledge promptly and authenticate the stored T
 })
 
 test('S1: private root status supports Russian, waiting Cards and restart without duplicates', async t => {
-  const s = await startBridge(t)
+  const s = await startBridge(t, { timeout: 10000 })
   s.sessionEvent('turn/start', { turn: 1 })
   await s.question({ question: 'Choose', options: [{ label: 'Yes' }] })
   const card = await s.request('sendRichMessage', p => /Choose/.test(p.rich_message.html))

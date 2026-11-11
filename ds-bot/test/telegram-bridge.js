@@ -17,7 +17,7 @@ export async function until(read, timeout = 3000) {
   throw new Error('Timed out waiting for Bridge boundary output')
 }
 
-export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId, apiReplies = {}, waitForPoll = true } = {}) {
+export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot', is_bot: true }, pair = true, existingConnectionId, apiReplies = {}, waitForPoll = true, timeout = 3000 } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsb-s1-'))
   const calls = []
   const updates = []
@@ -98,7 +98,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   })
   const boot = () => createRuntime(ctx = context(), { home, im: { telegram: { api: `http://127.0.0.1:${server.address().port}` } } })
   let rt = boot()
-  const request = (method, predicate = () => true, after = 0) => until(() => calls.slice(after).find(call => call.method === method && predicate(call.params)))
+  const request = (method, predicate = () => true, after = 0) => until(() => calls.slice(after).find(call => call.method === method && predicate(call.params)), timeout)
   const pushUpdate = update => {
     updates.push({ update_id: ++updateId, ...update })
     drain()

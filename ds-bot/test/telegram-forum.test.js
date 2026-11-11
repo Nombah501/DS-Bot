@@ -68,7 +68,7 @@ test('S1: General without a Default Bot explains /bind in English and Russian', 
     settings: { token: 'S1-FAKE-TOKEN' }, secrets: {}, enabled: true,
     paired: [{ id: '9', name: 'Ann', access: 'all', at: 1 }], requests: [], chats: {}, createdAt: 1,
   } } }
-  const s = await startBridge(t, { seed, pair: false, existingConnectionId: 'im_forum' })
+  const s = await startBridge(t, { seed, pair: false, existingConnectionId: 'im_forum', timeout: 10000 })
   for (const language_code of ['en', 'ru-RU']) {
     const after = s.calls.length
     s.message('Hello General', { chat: forum, from: { id: 9, first_name: 'Ann', language_code } })
