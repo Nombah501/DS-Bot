@@ -164,3 +164,25 @@ test('S1: mention-free forum routing ignores commands addressed to another Teleg
   assert.equal(s.calls.slice(after).some(call => call.method === 'getChatMember'), false)
   assert.equal(s.calls.slice(after).some(call => /Choose a Bot/.test(call.params.rich_message?.html ?? '')), false)
 })
+
+test('S1: rebinding a Topic never grants access to its old Cards, including after restart', async t => {
+  const s = await startBridge(t, { seed: team() })
+  s.replies.getChatMember = { ok: true, result: { status: 'administrator' } }
+  await bind(s, 'Chief')
+  await s.question({ question: 'Chief decision', options: [{ label: 'Yes' }] })
+  const card = await s.request('sendRichMessage', p => p.chat_id === '-60' && /Chief decision/.test(p.rich_message.html))
+  const data = choice(card, 'Yes')
+  await bind(s, 'Writer')
+  await s.restart()
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['b'], roomIds: [] } })
+  for (const answer of [() => press(s, data), () => s.message('1', { chat: forum, message_thread_id: 40 })]) {
+    const after = s.calls.length
+    answer()
+    await s.request('sendMessage', p => /not on your Access list/.test(p.text), after)
+    assert.equal(s.rt.state.questions.a?.question, 'Chief decision')
+  }
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: 'all' })
+  press(s, data)
+  await s.request('editMessageText', p => /Chief decision/.test(p.rich_message?.html) && /type="disabled"/.test(p.rich_message.html))
+  assert.equal(s.rt.state.questions.a, undefined)
+})

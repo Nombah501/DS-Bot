@@ -613,7 +613,7 @@ export function install(rt) {
       await rt.save()
     }
     const target = resolveTarget(conn, { ...chat, ...msg.chat })
-    if (imPlatform(conn.platform)?.topics === true && target !== undefined && !allows(conn.paired?.find(person => person.id === msg.sender.id), target)) {
+    if (!NUMBERS.test(body) && imPlatform(conn.platform)?.topics === true && target !== undefined && !allows(conn.paired?.find(person => person.id === msg.sender.id), target)) {
       await sendText(conn, msg.chat, text('denied'))
       return
     }
@@ -649,6 +649,11 @@ export function install(rt) {
     if (NUMBERS.test(body)) {
       const picked = body.trim().split(/\s+/).map(Number)
       const held = newestOpenCard(conn, msg.chat)
+      if (held !== undefined && imPlatform(conn.platform)?.topics === true
+        && !allows(conn.paired?.find(person => person.id === msg.sender.id), held.entry.target)) {
+        await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
+        return
+      }
       // Anything that does not clearly answer the newest open card — a stale
       // source, an out-of-range pick, several picks on a single choice — is a
       // normal message for the Bot, never swallowed and never 'stale'.
@@ -665,6 +670,10 @@ export function install(rt) {
         && rt.approvalsView().some(entry => `a:${entry.id}` === held.cardKey)) {
         if (await answerApprovalCard(conn, msg.chat, held.cardKey, picked[0] === 1 ? 'allow' : 'reject', msg.sender)) return
       }
+    }
+    if (imPlatform(conn.platform)?.topics === true && target !== undefined && !allows(conn.paired?.find(person => person.id === msg.sender.id), target)) {
+      await sendText(conn, msg.chat, text('denied'))
+      return
     }
     if (target === undefined) {
       await sendText(conn, msg.chat, text(unboundKey))
@@ -712,18 +721,19 @@ export function install(rt) {
       await forumBind.action(conn, { ...action, chat })
       return
     }
-    if (imPlatform(conn.platform)?.topics === true) {
-      const target = resolveTarget(conn, chat)
-      if (target === undefined || !allows(conn.paired?.find(person => person.id === action.sender.id), target)) {
-        await sendCardReply(conn, chat, text(target === undefined ? 'stale' : 'denied'))
-        return
-      }
-    }
     // Button data is `<kind>:<id>:<choice>`; the id is everything between the
     // first and the last colon, so an id with a colon in it still parses.
     const cut = data.lastIndexOf(':')
     const cardKey = data.slice(0, cut)
     const choice = data.slice(cut + 1)
+    if (imPlatform(conn.platform)?.topics === true) {
+      const key = data.startsWith('m:') ? `q:${cardKey.slice(2)}` : cardKey
+      const target = openCard(conn, chat, key, action)?.entry.target
+      if (!allows(conn.paired?.find(person => person.id === action.sender.id), target)) {
+        await sendCardReply(conn, chat, text(target === undefined ? 'stale' : 'denied'))
+        return
+      }
+    }
     if (data.startsWith('m:') && cut > 2 && imPlatform(conn.platform)?.richCards === true) {
       const key = `q:${cardKey.slice(2)}`
       const held = openCard(conn, chat, key)
@@ -789,7 +799,7 @@ export function install(rt) {
     for (const { chat, target } of targets) {
       const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
         && imPlatform(conn.platform)?.privateCards === true && typeof runners.get(conn.id)?.handle?.sendPrivateCard === 'function'
-      const copy = privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + 5 * 60 * 1000 } : {}
+      const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + 5 * 60 * 1000 } : {}) }
       const text = textFor(conn, privateCard ? initiator.sender : chat)
       const rendered = typeof body === 'function' ? body(text) : body
       const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
@@ -815,7 +825,7 @@ export function install(rt) {
         const address = { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
         let publicCopy = entries.find(copy => copy.chatKey === entry.chatKey && copy.threadId === entry.threadId && copy.receiverUserId === undefined)
         if (entry.answer === undefined && Date.now() >= entry.privateUntil && publicCopy === undefined) {
-          publicCopy = { chatKey: entry.chatKey, text: entry.text, card: structuredClone(entry.card), threadId: entry.threadId }
+          publicCopy = { chatKey: entry.chatKey, text: entry.text, card: structuredClone(entry.card), threadId: entry.threadId, target: entry.target }
           entries.push(publicCopy)
           scheduleWrite(conn.id)
         }
