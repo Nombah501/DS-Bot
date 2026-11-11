@@ -93,9 +93,9 @@ test('S1: Initiator survives a host restart and ends with its turn', async t => 
   await s.restart()
   const after = s.calls.length
   const autonomous = approve(t, s)
-  const publicCard = await s.request('sendRichMessage', p => p.chat_id === '-50' && p.rich_message.html.includes('asks for approval'), after)
+  const publicCard = await s.request('sendRichMessage', p => p.chat_id === '5' && p.rich_message.html.includes('asks for approval'), after)
   assert.equal(publicCard.params.ephemeral_message_parameters, undefined)
-  press(s, publicCard, 9, { message_id: 702, ephemeral_message_id: undefined, receiver_user: undefined })
+  press(s, publicCard, 9, { chat: { id: 5, type: 'private' }, message_id: 702, ephemeral_message_id: undefined, receiver_user: undefined })
   assert.deepEqual(await autonomous, ['allowed-once'])
 })
 
@@ -106,13 +106,13 @@ test('S1: a turn started on the computer has no Initiator, even after a Telegram
   s.sessionEvent('turn/start', { turn: 2 })
   s.sessionEvent('user/message', { source: { kind: 'user', rpcId: 'desktop-request' } })
   const outcome = approve(t, s)
-  const sent = await s.request('sendRichMessage', p => p.chat_id === '-50' && p.rich_message.html.includes('asks for approval'))
+  const sent = await s.request('sendRichMessage', p => p.chat_id === '5' && p.rich_message.html.includes('asks for approval'))
   assert.equal(sent.params.ephemeral_message_parameters, undefined)
-  press(s, sent, 9, { message_id: 702, ephemeral_message_id: undefined, receiver_user: undefined })
+  press(s, sent, 9, { chat: { id: 5, type: 'private' }, message_id: 702, ephemeral_message_id: undefined, receiver_user: undefined })
   assert.deepEqual(await outcome, ['allowed-once'])
 })
 
-test('S1: an answer on the computer settles every Private and ordinary copy', async t => {
+test('S1: an answer on the computer settles the originating Private card without broadcasting another copy', async t => {
   const s = await startBridge(t)
   ephemeral(s)
   await startGroupTurn(s)
@@ -122,8 +122,8 @@ test('S1: an answer on the computer settles every Private and ordinary copy', as
   answer('rejected')
   assert.deepEqual(await outcome, ['rejected'])
   const privateEdit = await s.request('editEphemeralMessageText')
-  const ordinaryEdit = await s.request('editMessageText', p => p.chat_id === '5')
-  for (const edited of [privateEdit, ordinaryEdit]) {
+  assert.equal(s.calls.some(call => call.method === 'sendRichMessage' && call.params.chat_id === '5' && /asks for approval/.test(call.params.rich_message.html)), false)
+  for (const edited of [privateEdit]) {
     assert.match(edited.params.rich_message.html, /type="disabled"[^>]*>Reject/)
     assert.doesNotMatch(edited.params.rich_message.html, /type="callback"/)
   }

@@ -291,6 +291,12 @@ function DetailView({ conn, status, roster, actions, onBack }) {
     h('section', { className: 'bt-set-section' },
       h('h3', null, t('Accounts')),
       h('div', { className: 'bt-set-card' },
+        shown.topics === true ? h(Row, { label: t('Turns started outside Telegram') },
+          h(Segmented, { label: t('Turns started outside Telegram'), value: conn.nonTelegramTurns ?? 'all' },
+            [['all', 'All messages'], ['cards', 'Cards only'], ['none', 'Nothing']].map(([value, label]) => h('button', {
+              key: value, type: 'button', disabled: busy, 'aria-pressed': (conn.nonTelegramTurns ?? 'all') === value,
+              onClick: () => run(actions.imUpdate(conn.id, { nonTelegramTurns: value })),
+            }, t(label))))) : null,
         conn.paired.length === 0
           ? h('div', { className: 'bt-set-row' }, h('span', { className: 'bt-set-hint' }, t('Send the IM bot a message to connect your account')))
           : conn.paired.map(entry => h('div', { key: entry.id, className: 'bt-set-row' },

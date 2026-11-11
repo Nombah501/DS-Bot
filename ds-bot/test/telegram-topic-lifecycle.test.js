@@ -182,6 +182,10 @@ test('S1: private Topic lifecycle leaves admin-managed forum bindings intact', a
   const after = s.calls.length
   await s.rt.updateBot('b', { name: 'Editor' })
   await s.request('editForumTopic', p => p.message_thread_id === 102 && p.name === 'Editor', after)
+  s.message('Work in forum', { chat: forum, message_thread_id: 40 })
+  const prompt = await until(() => s.prompts.find(p => p.content?.[0]?.text === 'Work in forum'))
+  s.sessionEvent('turn/start', { turn: 1 }, 'b')
+  s.sessionEvent('user/message', { source: { kind: 'user', rpcId: prompt.requestId } }, 'b')
   s.step('Bound after rename', {}, 'b')
   await s.request('sendRichMessage', p => p.chat_id === '-60' && p.message_thread_id === 40 && /Bound after rename/.test(p.rich_message.html), after)
   s.replies.sendRichMessage = params => params.chat_id === '-60'

@@ -170,6 +170,11 @@ var ZH = {
   "Talks to": "对话对象",
   "Default Bot": "默认 Bot",
   "Access list": "访问列表",
+  "Turns started outside Telegram": "在 Telegram 外开始的轮次",
+  "All messages": "所有消息",
+  "Cards only": "仅卡片",
+  Nothing: "不发送",
+  "Choose all messages, Cards only or nothing": "请选择所有消息、仅卡片或不发送",
   "All Bots and groups": "所有 Bot 和群聊",
   "Selected: {count}": "已选择：{count}",
   "Choose all Bots and groups or an Access list of existing Bots and groups": "请选择所有 Bot 和群聊或现有 Bot 和群聊的访问列表",
@@ -1705,6 +1710,11 @@ Object.assign(ZH, HOST_ZH);
 var RU = {
   "Default Bot": "Bot по умолчанию",
   "Access list": "Список доступа",
+  "Turns started outside Telegram": "Ходы, начатые не в Telegram",
+  "All messages": "Все сообщения",
+  "Cards only": "Только Cards",
+  Nothing: "Ничего",
+  "Choose all messages, Cards only or nothing": "Выберите все сообщения, только Cards или ничего",
   "All Bots and groups": "Все Bots и группы",
   "Selected: {count}": "Выбрано: {count}",
   "Choose all Bots and groups or an Access list of existing Bots and groups": "Выберите все Bots и группы или список существующих Bots и групп",
@@ -20590,6 +20600,21 @@ function DetailView({ conn, status, roster, actions, onBack }) {
       (0, import_react42.createElement)(
         "div",
         { className: "bt-set-card" },
+        shown.topics === true ? (0, import_react42.createElement)(
+          Row3,
+          { label: t("Turns started outside Telegram") },
+          (0, import_react42.createElement)(
+            Segmented,
+            { label: t("Turns started outside Telegram"), value: conn.nonTelegramTurns ?? "all" },
+            [["all", "All messages"], ["cards", "Cards only"], ["none", "Nothing"]].map(([value, label]) => (0, import_react42.createElement)("button", {
+              key: value,
+              type: "button",
+              disabled: busy,
+              "aria-pressed": (conn.nonTelegramTurns ?? "all") === value,
+              onClick: () => run2(actions.imUpdate(conn.id, { nonTelegramTurns: value }))
+            }, t(label)))
+          )
+        ) : null,
         conn.paired.length === 0 ? (0, import_react42.createElement)("div", { className: "bt-set-row" }, (0, import_react42.createElement)("span", { className: "bt-set-hint" }, t("Send the IM bot a message to connect your account"))) : conn.paired.map((entry) => (0, import_react42.createElement)(
           "div",
           { key: entry.id, className: "bt-set-row" },

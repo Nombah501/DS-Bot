@@ -129,7 +129,7 @@ test('typing receives the chat key on every platform', async (t) => {
       seed.im = { connections: { im_typing: {
         id: 'im_typing', platform, botId: 'a', settings: {}, secrets: {}, enabled: true,
         paired: [{ id: 'u1', name: 'u1', at: 1 }], requests: [],
-        chats: { 'dm-u1': { kind: 'direct', title: 'u1', at: 1 } }, createdAt: 1,
+        chats: { 'dm-u1': { kind: 'direct', title: 'u1', personId: 'u1', at: 1 } }, createdAt: 1,
       } } }
       const s = await start({ platform, seed })
       t.after(s.stop)

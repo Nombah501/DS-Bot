@@ -7,6 +7,10 @@ export const allows = (person, target) => person !== undefined && target !== und
 
 export function migrateTopics(conn) {
   let changed = false
+  if (conn.nonTelegramTurns === undefined) {
+    conn.nonTelegramTurns = 'all'
+    changed = true
+  }
   for (const person of conn.paired ?? []) {
     if (person.access !== undefined) continue
     person.access = 'all'
