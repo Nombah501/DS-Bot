@@ -239,7 +239,7 @@ test('a drop after getMe succeeds is retried, not reported as an error (#1119)',
   assert.equal(statuses.filter(status => status.state === 'error').length, 0, 'a network drop is not shown as an error while it retries')
 })
 
-test('rich sends keep chat-scoped identity for edits and never degrade other errors', async t => {
+test('rich sends carry format for edits and never degrade other errors', async t => {
   const api = await fakeApi()
   api.holdPoll = true
   const warnings = []
@@ -247,8 +247,8 @@ test('rich sends keep chat-scoped identity for edits and never degrade other err
   t.after(() => { handle.stop(); api.close() })
   api.replies.sendRichMessage = { result: { message_id: 42 } }
   const chat = { key: '5', kind: 'direct' }
-  await handle.send(chat, { text: '**Rich**', rich: true })
-  await handle.edit(chat, 42, { text: '# Changed' })
+  const sent = await handle.send(chat, { text: '**Rich**', rich: true })
+  await handle.edit(chat, 42, { text: '# Changed', format: sent.format })
   const edited = api.calls.find(call => call.method === 'editMessageText')
   assert.equal(edited.params.rich_message.html, '<h1>Changed</h1>')
   assert.equal(edited.params.text, undefined)
@@ -260,4 +260,23 @@ test('rich sends keep chat-scoped identity for edits and never degrade other err
   }
   assert.equal(api.calls.some(call => call.method === 'sendMessage'), false)
   assert.equal(warnings.length, 4)
+})
+
+test('S2: rich edit format survives reconnect without retaining sent message identities', async t => {
+  const api = await fakeApi()
+  api.holdPoll = true
+  let handle
+  t.after(() => { handle?.stop(); api.close() })
+  const connect = () => telegram.connect({ token: 'TOKEN' }, env(api.api), { onMessage() {}, onAction() {}, onStatus() {} })
+  handle = connect()
+  api.replies.sendRichMessage = { result: { message_id: 42 } }
+  const chat = { key: '5', kind: 'direct' }
+  const sent = await handle.send(chat, { text: 'First', rich: true })
+  assert.equal(sent.format, 'rich')
+  handle.stop()
+  handle = connect()
+  await handle.edit(chat, sent.messageId, { text: '# Restored', format: sent.format })
+  const edited = api.calls.find(call => call.method === 'editMessageText')
+  assert.equal(edited.params.rich_message.html, '<h1>Restored</h1>')
+  assert.equal(edited.params.text, undefined)
 })

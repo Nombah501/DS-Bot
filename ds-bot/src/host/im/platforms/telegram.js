@@ -261,8 +261,6 @@ export default {
     }
     void poll()
 
-    const richIds = new Set()
-    const identity = (chat, id) => JSON.stringify([chat.key, chat.threadId, id])
     const send = async (chat, { text, buttons, rich = false }) => {
       if (rich) {
         let messageId
@@ -270,9 +268,8 @@ export default {
           for (const chunk of chunkRich(text)) {
             const sent = await call('sendRichMessage', { chat_id: chat.key, ...thread(chat), rich_message: { html: chunk.html } })
             messageId = sent?.message_id ?? messageId
-            richIds.add(identity(chat, messageId))
           }
-          return { messageId }
+          return { messageId, format: 'rich' }
         } catch (error) {
           if (error.status !== 404 && !/method (?:not found|unknown)|unknown method/i.test(error.message)) {
             env.log?.warn('ds-bot: Telegram rich send failed: %s', reason(error))
@@ -382,14 +379,13 @@ export default {
           can_stop: true,
         })
       },
-      edit: async (chat, messageId, { text, buttons }) => {
+      edit: async (chat, messageId, { text, buttons, format }) => {
         const markup = { reply_markup: keyboard(buttons) }
-        if (richIds.has(identity(chat, messageId))) {
+        if (format === 'rich') {
           const chunks = chunkRich(text)
           await call('editMessageText', { chat_id: chat.key, message_id: messageId, rich_message: { html: chunks[0]?.html ?? '<p></p>' }, ...markup })
           for (const chunk of chunks.slice(1)) {
-            const sent = await call('sendRichMessage', { chat_id: chat.key, ...thread(chat), rich_message: { html: chunk.html } })
-            richIds.add(identity(chat, sent?.message_id))
+            await call('sendRichMessage', { chat_id: chat.key, ...thread(chat), rich_message: { html: chunk.html } })
           }
           return
         }
