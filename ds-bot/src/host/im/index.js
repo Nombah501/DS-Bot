@@ -27,8 +27,8 @@ export function install(rt) {
   const { ctx, state } = rt
   const statusSteps = new Map()
   const imDir = join(rt.home, 'im')
-  const zh = () => String(rt.uiLanguage?.() ?? '').startsWith('Chinese')
-  const text = (key, values = {}, languageCode) => {
+  const text = (key, values = {}, languageCode, english = false) => {
+    const zh = () => !english && String(rt.uiLanguage?.() ?? '').startsWith('Chinese')
     if (String(languageCode ?? '').toLowerCase().startsWith('ru')) {
       return {
         requested: 'Запрос на подключение отправлен в DS Bot; разрешите его на компьютере в Настройки → IM.',
@@ -72,6 +72,7 @@ export function install(rt) {
         reject: 'Отклонить',
         done: 'Готово',
         selectOne: 'Выберите хотя бы один вариант.',
+        language: `Язык: ${values.language}. Выберите: /lang ru, /lang en, /lang auto (язык Telegram).`,
       }[key] ?? key
     }
     const line = {
@@ -116,10 +117,17 @@ export function install(rt) {
       reject: zh() ? '拒绝' : 'Reject',
       done: zh() ? '完成' : 'Done',
       selectOne: zh() ? '请至少选择一个选项。' : 'Select at least one option.',
+      language: zh() ? `语言：${values.language}。请选择：/lang ru、/lang en、/lang auto（跟随 Telegram）。` : `Language: ${values.language}. Choose: /lang ru, /lang en, /lang auto (Telegram language).`,
     }[key]
     return line ?? key
   }
-  const textFor = (conn, chat) => (key, values) => text(key, values, conn.platform === 'telegram' ? chat?.languageCode : undefined)
+  const textFor = (conn, chat) => (key, values) => {
+    if (conn.platform !== 'telegram') return text(key, values)
+    const saved = conn.chats?.[chat?.key ?? chat?.chatKey]
+    const personId = chat?.id ?? chat?.receiverUserId ?? chat?.personId ?? chat?.lastSenderId ?? saved?.personId ?? saved?.lastSenderId
+    const language = conn.paired?.find(person => person.id === personId)?.language
+    return text(key, values, language === 'ru' || language === 'en' ? language : chat?.languageCode ?? saved?.languageCode, language === 'en')
+  }
 
   // ---------------------------------------------------------------- runtime file
   const runtimes = new Map() // id → { data: {runtime, cards, open}, timer }
@@ -615,7 +623,10 @@ export function install(rt) {
 
   const onMessage = (conn) => async (msg) => {
     const text = textFor(conn, msg.sender)
-    if (conn.platform === 'telegram') msg.chat.languageCode = msg.sender.languageCode
+    if (conn.platform === 'telegram') {
+      msg.chat.languageCode = msg.sender.languageCode
+      msg.chat.lastSenderId = msg.sender.id
+    }
     if (!paired(conn, msg.sender.id)) {
       if (msg.chat.kind === 'group' && !msg.mentioned) return
       if (!requested(conn, msg)) return
@@ -644,9 +655,20 @@ export function install(rt) {
       chat.personId = msg.sender.id
       await rt.save()
     }
-    if (conn.platform === 'telegram' && chat.languageCode !== msg.sender.languageCode) {
+    if (conn.platform === 'telegram' && (chat.languageCode !== msg.sender.languageCode || chat.lastSenderId !== msg.sender.id)) {
       chat.languageCode = msg.sender.languageCode
+      chat.lastSenderId = msg.sender.id
       await rt.save()
+    }
+    if (conn.platform === 'telegram' && /^\/lang(?:@\S+)?(?:\s|$)/.test(body)) {
+      const person = conn.paired.find(person => person.id === msg.sender.id)
+      const language = body.split(/\s+/).slice(1).join(' ')
+      if (['ru', 'en', 'auto'].includes(language)) {
+        person.language = language
+        await rt.save()
+      }
+      await sendText(conn, msg.chat, text('language', { language: person.language ?? 'auto' }))
+      return
     }
     const target = resolveTarget(conn, { ...chat, ...msg.chat })
     if (!NUMBERS.test(body) && imPlatform(conn.platform)?.topics === true && target !== undefined && !allows(conn.paired?.find(person => person.id === msg.sender.id), target)) {
@@ -663,7 +685,7 @@ export function install(rt) {
         await sendText(conn, msg.chat, text(unboundKey))
         return
       }
-      await stopTarget(conn, { ...msg.chat, languageCode: msg.sender.languageCode }, target)
+      await stopTarget(conn, msg.chat, target)
       return
     }
     if (imPlatform(conn.platform)?.topics === true && /^\/status(?:@\S+)?\s*$/.test(body)) {
@@ -767,10 +789,11 @@ export function install(rt) {
     const text = textFor(conn, action.sender)
     if (conn.platform === 'telegram' && conn.chats?.[action.chat.key] !== undefined) {
       conn.chats[action.chat.key].languageCode = action.sender.languageCode
+      conn.chats[action.chat.key].lastSenderId = action.sender.id
       await rt.save()
     }
     const data = String(action.data ?? '')
-    const chat = { ...action.chat, languageCode: action.sender.languageCode }
+    const chat = { ...action.chat, languageCode: action.sender.languageCode, ...(conn.platform === 'telegram' ? { lastSenderId: action.sender.id } : {}) }
     if (imPlatform(conn.platform)?.topics === true && data.startsWith('b:')) {
       await forumBind.action(conn, { ...action, chat })
       return
@@ -1017,7 +1040,7 @@ export function install(rt) {
         if (openCard(cardKey)) continue
         for (const entry of entries) {
           if (entry.answer === undefined) {
-            entry.answer = textFor(conn, conn.chats?.[entry.chatKey])('answered')
+            entry.answer = textFor(conn, entry.receiverUserId === undefined ? conn.chats?.[entry.chatKey] : entry)('answered')
             if (entry.card !== undefined) entry.card.settled = { answer: entry.answer, options: [] }
             touched = true
           }

@@ -109,3 +109,26 @@ for (const failure of ['slow', 'throw']) {
     assert.equal(s.calls.filter(c => c.method === 'answerCallbackQuery' && c.params.callback_query_id === failure).length, 1)
   })
 }
+
+test('S1: /lang overrides device and browser languages for empty Done and access toasts', async t => {
+  const s = await startBridge(t, { locale: 'zh-CN' })
+  await s.question(question)
+  const sent = await s.request('sendRichMessage', p => p.rich_message.html.includes('Choose reports'))
+  const done = /data="([^"]*:done)"/.exec(sent.params.rich_message.html)[1]
+  for (const [preference, device, confirmation, notice, denied] of [
+    ['en', 'ru', 'Language: en.', 'Select at least one option.', 'This Bot or group is not on your Access list.'],
+    ['ru', 'en', 'Язык: ru.', 'Выберите хотя бы один вариант.', 'Этот Bot или группа не входят в ваш список доступа.'],
+  ]) {
+    await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: 'all' })
+    const after = s.calls.length
+    s.message(`/lang ${preference}`, { from: { id: 9, language_code: device } })
+    await s.request('sendMessage', p => p.text.startsWith(confirmation), after)
+    const callbackStart = s.calls.length
+    press(s, done, `preference-${preference}`, device)
+    await s.request('answerCallbackQuery', p => p.callback_query_id === `preference-${preference}` && p.text === notice)
+    await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: [], roomIds: [] } })
+    press(s, done, `preference-denied-${preference}`, device)
+    await s.request('answerCallbackQuery', p => p.callback_query_id === `preference-denied-${preference}` && p.text === denied)
+    assert.equal(s.calls.slice(callbackStart).some(c => c.method === 'sendMessage'), false)
+  }
+})

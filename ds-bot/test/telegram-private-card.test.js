@@ -42,17 +42,24 @@ test('S1: a group approval is private to the paired person who started its turn'
   assert.match(edited.params.rich_message.html, /type="disabled"[^>]*>Allow once/)
 })
 
-for (const [language, locale, notice] of [
+for (const [language, locale, notice, preference] of [
   ['en', 'en', 'Only the Initiator can answer this card.'],
   ['ru-RU', 'en', 'Только инициатор может ответить на эту карточку.'],
   ['zh-CN', 'zh-CN', '只有发起人可以回答这张卡。'],
+  ['en', 'en', 'Только инициатор может ответить на эту карточку.', 'ru'],
+  ['ru', 'zh-CN', 'Only the Initiator can answer this card.', 'en'],
 ]) {
-  test(`S1: another paired person cannot answer a Private card by button or number in ${language}`, async t => {
+  test(`S1: another paired person cannot answer a Private card by button or number in ${preference ?? language}`, async t => {
     const s = await startBridge(t, { locale })
     ephemeral(s)
     s.message('hello', { from: { id: 10, first_name: 'Bob' } })
     await until(() => s.rt.imView().connections[0].requests.some(p => p.id === '10'))
     await s.rt.imEndpoint('im-pair', { id: s.connection.id, senderId: '10', allow: true })
+    if (preference !== undefined) {
+      const after = s.calls.length
+      s.message(`/lang ${preference}`, { from: { id: 10, first_name: 'Bob', language_code: language } })
+      await s.request('sendMessage', p => p.text.startsWith(preference === 'ru' ? 'Язык: ru.' : 'Language: en.'), after)
+    }
     await startGroupTurn(s)
     const outcome = approve(t, s)
     const sent = await s.request('sendRichMessage', p => p.chat_id === '-50' && /asks for approval|请你审批/.test(p.rich_message.html))
@@ -62,7 +69,7 @@ for (const [language, locale, notice] of [
     assert.equal(s.calls.slice(beforePress).some(c => c.method === 'sendMessage' && c.params.text === notice), false)
     const after = s.calls.length
     s.message('@fakebot 1', { chat: group, from: { id: 10, first_name: 'Bob', language_code: 'ru' } })
-    await s.request('sendMessage', p => /Только инициатор/.test(p.text), after)
+    await s.request('sendMessage', p => p.text === (preference === 'en' ? 'Only the Initiator can answer this card.' : 'Только инициатор может ответить на эту карточку.'), after)
     assert.equal(s.prompts.length, 1)
     assert.equal(s.rt.approvalsView().length, 1)
     press(s, sent)
