@@ -6,7 +6,16 @@ import { fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 export const SCRIPT_TIMEOUT = 20_000
+const SCRIPT_HEAP_MB = 128
 const CHILD = fileURLToPath(new URL('./script-child.js', import.meta.url))
+
+// Node aborts a process that reaches its heap limit: SIGABRT, or exit code 134 on
+// Windows, which has no signals. The script cannot call abort() itself, so an abort
+// is the heap limit.
+function stopReason(code, signal) {
+  if (signal === 'SIGABRT' || code === 134) return `Script ran out of memory (${SCRIPT_HEAP_MB} MB).`
+  return `Script stopped before it finished (${signal ?? `exit ${code}`}).`
+}
 
 // The child sees none of the host's environment (keys, tokens, DSH_HOME). Windows needs
 // SystemRoot to start a process; the desktop app's host is Electron run as Node, and so
@@ -35,7 +44,7 @@ export function runIsolatedScript(body, helpers, { timeout = SCRIPT_TIMEOUT } = 
     try {
       child = fork(CHILD, [], {
         // The host's flags (loaders, --expose-internals) are not the child's.
-        execArgv: ['--max-old-space-size=128'],
+        execArgv: [`--max-old-space-size=${SCRIPT_HEAP_MB}`],
         env: childEnv(),
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         serialization: 'json',
@@ -71,7 +80,7 @@ export function runIsolatedScript(body, helpers, { timeout = SCRIPT_TIMEOUT } = 
       if (!settled) send(reply)
     })
     child.on('error', error => end(reject, new Error(`Script stopped: ${error?.message ?? error}`)))
-    child.on('exit', (code, signal) => end(reject, new Error(`Script stopped before it finished (${signal ?? `exit ${code}`}).`)))
+    child.on('exit', (code, signal) => end(reject, new Error(stopReason(code, signal))))
     send({ type: 'start', body, names: Object.keys(helpers), wait: timeout })
   })
 }

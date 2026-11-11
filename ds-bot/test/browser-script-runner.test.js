@@ -121,7 +121,7 @@ test('a helper result that is not JSON reaches the script as undefined, and an u
 })
 
 test('a script that exhausts its heap ends only its own process', async () => {
-  await assert.rejects(runIsolatedScript("const a = 'A'.repeat(60 * 1024 * 1024); const parts = []; for (;;) parts.push(a + parts.length)", {}, { timeout: 15_000 }))
+  await assert.rejects(runIsolatedScript("const a = 'A'.repeat(60 * 1024 * 1024); const parts = []; for (;;) parts.push(a + parts.length)", {}, { timeout: 15_000 }), /Script ran out of memory \(128 MB\)\./)
   assert.equal(await runIsolatedScript('done("alive")', {}), 'alive')
 })
 
