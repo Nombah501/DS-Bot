@@ -163,6 +163,9 @@ test('S1: group /status is a rich snapshot with the same progress fields, never 
   assert.match(status.params.rich_message.html, /Инструмент: read_file/)
   assert.match(status.params.rich_message.html, /Шаг: 4/)
   assert.match(status.params.rich_message.html, /Время хода:/)
+  assert.match(status.params.rich_message.html, /<tg-button type="callback_data" data="[^"]+">Остановить<\/tg-button>/)
+  const callback = status.params.rich_message.html.match(/data="([^"]+)"/)[1]
+  assert.ok(Buffer.byteLength(callback) <= 64)
   assert.equal(s.calls.filter(c => c.method === 'sendWidget').length, 0)
 })
 

@@ -9,7 +9,7 @@ import { replaceFile } from '../files.js'
 import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
-import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, topicTarget } from './topics.js'
+import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, topicTarget, sameTarget } from './topics.js'
 import { forumBinder } from './forum-bind.js'
 import { statusData, statusPanels } from './status-panel.js'
 
@@ -499,6 +499,12 @@ export function install(rt) {
     if (target?.roomId !== undefined && rt.roomOf(target.roomId) !== undefined) return target
     return undefined
   }
+  const validStatusTarget = (conn, chat, target) => {
+    const saved = conn.chats?.[chat.key]
+    const topic = saved?.topics?.[chat.threadId ?? (saved?.isForum ? 1 : undefined)]
+    return saved !== undefined && !topic?.closed && topic?.replacedBy === undefined
+      && sameTarget(resolveTarget(conn, chat), target)
+  }
 
   // Shared Stop path for /stop, Drafts and the Status panel.
   const stopTarget = async (conn, chat, target) => {
@@ -688,7 +694,15 @@ export function install(rt) {
           await panels.show(msg.chat, target, text)
         } else if (imPlatform(conn.platform)?.statusPanel === true) {
           const data = statusData(rt, target, text, statusSteps)
-          sendTo(conn, msg.chat.key, msg.chat, `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`, undefined, undefined, true)
+          const body = `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`
+          if (msg.chat.kind === 'group' && data.active && imPlatform(conn.platform)?.richCards === true
+            && typeof runners.get(conn.id)?.handle?.sendCard === 'function') {
+            const key = `t:${randomUUID()}`
+            await sendCard(conn, key, [{ chat: msg.chat, target }], body, undefined,
+              () => ({ text: body, options: [{ data: `${key}:stop`, label: text('stop') }] }))
+          } else {
+            sendTo(conn, msg.chat.key, msg.chat, body, undefined, undefined, true)
+          }
         } else {
           sendTo(conn, msg.chat.key, msg.chat, `${targetName(conn, target)} — ${text(busyOf(target) ? 'working' : 'idle')}`, undefined, undefined, true)
         }
@@ -763,7 +777,12 @@ export function install(rt) {
   }
 
   const onAction = (conn) => async (action) => {
-    if (!paired(conn, action.sender.id)) return
+    if (!paired(conn, action.sender.id)) {
+      if (imPlatform(conn.platform)?.statusPanel === true && String(action.data ?? '').startsWith('t:')) {
+        await sendCardReply(conn, action.chat, textFor(conn, action.sender)('denied'))
+      }
+      return
+    }
     const text = textFor(conn, action.sender)
     if (conn.platform === 'telegram' && conn.chats?.[action.chat.key] !== undefined) {
       conn.chats[action.chat.key].languageCode = action.sender.languageCode
@@ -781,6 +800,30 @@ export function install(rt) {
     const cut = data.lastIndexOf(':')
     const cardKey = data.slice(0, cut)
     const choice = data.slice(cut + 1)
+    if (imPlatform(conn.platform)?.statusPanel === true && data.startsWith('t:')) {
+      const entry = runtimes.get(conn.id)?.data.cards[cardKey]?.find(item => item.chatKey === chat.key
+        && item.threadId === chat.threadId && item.messageId === action.messageId)
+      if (chat.kind !== 'group' || choice !== 'stop' || entry === undefined) {
+        await sendCardReply(conn, chat, text('idle'))
+        return
+      }
+      if (!allows(conn.paired?.find(person => person.id === action.sender.id), entry.target)
+        || !validStatusTarget(conn, chat, entry.target)) {
+        await sendCardReply(conn, chat, text('denied'))
+        return
+      }
+      if (entry.answer !== undefined || !statusData(rt, entry.target, text, statusSteps).active) {
+        await settleCard(conn.id, cardKey, text => text('idle'), [])
+        await settledEdits(conn)
+        await sendCardReply(conn, chat, text('idle'))
+        return
+      }
+      // Claim this snapshot before cancellation yields, so a second press cannot stop twice.
+      await settleCard(conn.id, cardKey, text => text('stopped'), [])
+      await stopTarget(conn, chat, entry.target)
+      await settledEdits(conn)
+      return
+    }
     if (imPlatform(conn.platform)?.topics === true) {
       const key = data.startsWith('m:') ? `q:${cardKey.slice(2)}` : cardKey
       const target = openCard(conn, chat, key, action)?.entry.target
@@ -985,7 +1028,11 @@ export function install(rt) {
       const openCard = cardKey => cardKey.startsWith('q:') ? openIds.has(cardKey)
         : cardKey.startsWith('a:') ? rt.approvalsView().some(entry => `a:${entry.id}` === cardKey)
           : cardKey.startsWith('s:') ? openSecret.has(cardKey)
-            : cardKey.startsWith('v:') ? openViews.has(cardKey) : false
+            : cardKey.startsWith('v:') ? openViews.has(cardKey)
+              : cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
+                ? data.cards[cardKey].some(entry => validStatusTarget(conn, { key: entry.chatKey, ...conn.chats?.[entry.chatKey], threadId: entry.threadId }, entry.target)
+                  && statusData(rt, entry.target, textFor(conn, conn.chats?.[entry.chatKey]), statusSteps).active)
+                : false
       for (const [cardKey, entries] of Object.entries(data.cards)) {
         if (openCard(cardKey)) continue
         for (const entry of entries) {
