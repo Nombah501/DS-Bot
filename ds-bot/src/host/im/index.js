@@ -12,6 +12,7 @@ import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
 import { addressKey, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer } from './topics.js'
 import { placement } from './placement.js'
+import { draftStream } from './drafts.js'
 import { forumBinder } from './forum-bind.js'
 import { statusData, statusPanels } from './status-panel.js'
 
@@ -19,8 +20,6 @@ const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
 const RETRY_MS = 5_000
 const TYPING_MS = 4_000
-// Local conservative policy; Telegram's numeric Draft rate limit is unverified.
-const DRAFT_MS = 1000
 const NUMBERS = /^\s*\d+(\s+\d+)*\s*$/
 
 const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase()
@@ -449,19 +448,8 @@ export function install(rt) {
     const oldThreadId = chat.threadId
     const threadId = await restoreTopic(conn, chat)
     if (threadId === undefined) return false
-    const runner = runners.get(conn.id)
-    const oldKey = addressKey(chat)
     chat.threadId = threadId
-    const draft = runner?.draftChats.get(oldKey)
-    if (draft !== undefined) {
-      runner.draftChats.delete(oldKey)
-      runner.draftChats.set(addressKey(chat), draft)
-    }
-    for (const attempt of runner?.drafts.values() ?? []) {
-      for (const copy of attempt.copies) {
-        if (copy.chat.key === chat.key && copy.chat.threadId === oldThreadId) copy.chat.threadId = threadId
-      }
-    }
+    runners.get(conn.id)?.drafts?.moved(chat.key, oldThreadId, threadId)
     const data = await cardsOf(conn.id)
     for (const entries of Object.values(data.cards)) {
       for (const entry of entries) {
@@ -509,7 +497,7 @@ export function install(rt) {
         continue
       }
       try {
-        const draft = runner.draftChats.get(chatKey)?.sending
+        const draft = runner.drafts?.sending(chatKey)
         if (draft !== undefined) await draft
         // In place: a Card's `after` keeps this address object and records the moved Topic.
         place.follow(conn, job.chat)
@@ -550,57 +538,6 @@ export function install(rt) {
   // `output` is the turn output a Placement place carries; queued output is rechecked against it.
   const sendTo = (conn, chatKey, chat, body, buttons, after, rich = false, output = undefined) => enqueue(conn, addressKey(chat), { chat, target: place.targetOf(conn, chat), output, text: body, buttons, after, ...(rich && imPlatform(conn.platform)?.richMessages === true ? { rich: true } : {}) })
 
-  // Drafts never enter the durable retry queue: only its latest pending text matters.
-  const flushDraft = (conn, chatKey) => {
-    const runner = runners.get(conn.id)
-    const held = runner?.draftChats.get(chatKey)
-    if (held === undefined || held.pending === undefined || held.sending !== undefined || held.timer !== undefined) return
-    const wait = held.lastAt + DRAFT_MS - Date.now()
-    if (wait > 0) {
-      held.timer = setTimeout(() => {
-        held.timer = undefined
-        flushDraft(conn, chatKey)
-      }, wait)
-      held.timer.unref?.()
-      return
-    }
-    const copy = held.pending
-    held.pending = undefined
-    if (copy.ended || !place.deliverable(conn, copy.chat, copy)) return
-    held.lastAt = Date.now()
-    held.sending = Promise.resolve(runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text }))
-      .catch(async caught => {
-        let error = caught
-        if (runners.get(conn.id) !== runner) return
-        if (imPlatform(conn.platform)?.topics === true && error?.topicMissing === true) {
-          try {
-            if (await recoverTopic(fresh(conn.id) ?? conn, copy.chat) && !copy.ended && place.deliverable(conn, copy.chat, copy)) {
-              await runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text })
-              return
-            }
-          } catch (recoveryError) { error = recoveryError }
-        }
-        rt.warn('ds-bot: im draft failed: %s', rt.redactSecrets(String(error?.message ?? error)))
-        if (Number(error?.retryAfter) > 0) held.lastAt = Date.now() + error.retryAfter * 1000
-      })
-      .finally(() => {
-        held.sending = undefined
-        if (runners.get(conn.id) === runner) flushDraft(conn, chatKey)
-      })
-  }
-  const finishDraft = (runner, key) => {
-    const attempt = runner.drafts.get(key)
-    if (attempt === undefined) return
-    for (const copy of attempt.copies) {
-      copy.ended = true
-      const held = runner.draftChats.get(addressKey(copy.chat))
-      if (held?.pending !== copy) continue
-      held.pending = undefined
-      clearTimeout(held.timer)
-      held.timer = undefined
-    }
-    runner.drafts.delete(key)
-  }
   // ----------------------------------------------------------------- inbound
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
   const requested = (conn, msg) => {
@@ -617,10 +554,7 @@ export function install(rt) {
 
   // Shared Stop path for /stop, Drafts and the Status panel.
   const stopTarget = async (conn, chat, target, action) => {
-    const runner = runners.get(conn.id)
-    for (const [key, attempt] of runner?.drafts ?? []) {
-      if (attempt.copies.some(copy => target.botId !== undefined ? copy.target.botId === target.botId : copy.target.roomId === target.roomId)) finishDraft(runner, key)
-    }
+    runners.get(conn.id)?.drafts?.endTarget(target)
     const stopped = target.botId !== undefined ? await rt.stopChat(target.botId) : await rt.stopRoomWork(target.roomId)
     await sendCardReply(conn, chat, textFor(conn, chat)(stopped ? 'stopped' : 'idle'), action)
     return stopped
@@ -628,16 +562,13 @@ export function install(rt) {
   const onStop = (conn) => async ({ chat, draftId }) => {
     const runner = runners.get(conn.id)
     if (imPlatform(conn.platform)?.drafts !== true || chat.kind !== 'direct' || !Number.isSafeInteger(draftId) || draftId === 0) return
-    for (const attempt of runner?.drafts.values() ?? []) {
-      const copy = attempt.copies.find(copy => copy.draftId === draftId && copy.chat.key === chat.key && copy.chat.threadId === chat.threadId && !copy.ended)
-      if (copy === undefined) continue
-      const current = conn.chats?.[chat.key]
-      const target = current === undefined ? undefined : place.targetOf(conn, chat)
-      if (!place.may(conn, current?.personId, target)) return
-      if (target === undefined || target.botId !== copy.target.botId || target.roomId !== copy.target.roomId) return
-      await stopTarget(conn, { ...copy.chat, languageCode: current.languageCode }, target)
-      return
-    }
+    const copy = runner?.drafts?.find(chat, draftId)
+    if (copy === undefined) return
+    const current = conn.chats?.[chat.key]
+    const target = current === undefined ? undefined : place.targetOf(conn, chat)
+    if (!place.may(conn, current?.personId, target)) return
+    if (target === undefined || target.botId !== copy.target.botId || target.roomId !== copy.target.roomId) return
+    await stopTarget(conn, { ...copy.chat, languageCode: current.languageCode }, target)
   }
   const onWidgetQuery = conn => async action => {
     if (imPlatform(conn.platform)?.statusPanel !== true || action.chat.kind !== 'direct'
@@ -1202,7 +1133,7 @@ export function install(rt) {
     }
     // The slot is reserved before the async work: a concurrent sync cannot
     // start a second adapter for the same connection.
-    const runner = { handle: undefined, queues: new Map(), typing: undefined, drafts: new Map(), draftChats: new Map(), nextDraftId: randomBytes(4).readUInt32BE(0) || 1 }
+    const runner = { handle: undefined, queues: new Map(), typing: undefined, drafts: undefined }
     runners.set(conn.id, runner)
     setStatus(conn.id, { state: 'connecting', at: Date.now() })
     try {
@@ -1233,6 +1164,15 @@ export function install(rt) {
         return
       }
       runner.handle = handle
+      if (typeof handle.draft === 'function') {
+        runner.drafts = draftStream({
+          connOf: () => fresh(conn.id) ?? conn,
+          place,
+          send: (chat, draft) => handle.draft(chat, draft),
+          recover: async chat => imPlatform(conn.platform)?.topics === true && await recoverTopic(fresh(conn.id) ?? conn, chat),
+          warn: message => rt.warn('ds-bot: im draft failed: %s', rt.redactSecrets(message)),
+        })
+      }
       if (platform?.statusPanel === true && typeof handle.sendStatusPanel === 'function' && typeof handle.editStatusPanel === 'function') {
         runner.panels = statusPanels(handle, {
           records: (await runtimeOf(conn.id)).data.panels,
@@ -1286,7 +1226,7 @@ export function install(rt) {
     clearInterval(runner?.privateTimer)
     runner?.panels?.stop()
     for (const queue of runner?.queues.values() ?? []) clearTimeout(queue.retry)
-    for (const held of runner?.draftChats.values() ?? []) clearTimeout(held.timer)
+    runner?.drafts?.dispose()
     await Promise.resolve(runner?.handle?.stop?.()).catch(() => {})
     if (statuses.get(id)?.state !== 'error') setStatus(id, { state: 'off', at: Date.now() })
   }
@@ -1592,40 +1532,17 @@ export function install(rt) {
     const key = JSON.stringify([agent.id, frame.attemptId])
     for (const conn of Object.values(connections())) {
       const runner = runners.get(conn.id)
-      if (imPlatform(conn.platform)?.drafts !== true || typeof runner?.handle?.draft !== 'function') continue
+      if (imPlatform(conn.platform)?.drafts !== true || runner?.drafts === undefined) continue
       if (frame.type === 'start') {
         const botId = rt.chatOwners.get(agent.id)
         const roomId = rt.groupOwners.get(agent.id)?.roomId
         const match = roomId === undefined ? { botId } : { roomId }
         if ((botId === undefined && roomId === undefined) || (roomId === undefined && (state.exchangeTurns[agent.id] ?? []).includes(frame.turn))) continue
-        finishDraft(runner, key)
-        runner.drafts.set(key, { sessionId: agent.id, match, turn: frame.turn, step: frame.step, text: '', copies: [] })
+        runner.drafts.start(key, { sessionId: agent.id, owner: match, turn: frame.turn, step: frame.step })
         continue
       }
-      const attempt = runner.drafts.get(key)
-      if (attempt === undefined) continue
-      if (frame.type === 'end') {
-        finishDraft(runner, key)
-      } else if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta') {
-        attempt.text += frame.chunk.text
-        const targets = place.places(conn, attempt.match, agent.id, 'draft')
-        for (const copy of attempt.copies) {
-          if (!targets.some(where => addressKey(where.chat) === addressKey(copy.chat))) copy.ended = true
-        }
-        for (const { chat, target, output } of targets) {
-          if (!attempt.copies.some(copy => !copy.ended && addressKey(copy.chat) === addressKey(chat))) {
-            attempt.copies.push({ attempt, target, output, draftId: runner.nextDraftId++, chat })
-          }
-        }
-        for (const copy of attempt.copies) {
-          if (copy.ended) continue
-          const chatKey = addressKey(copy.chat)
-          let held = runner.draftChats.get(chatKey)
-          if (held === undefined) runner.draftChats.set(chatKey, held = { lastAt: 0 })
-          held.pending = copy
-          flushDraft(conn, chatKey)
-        }
-      }
+      if (frame.type === 'end') runner.drafts.end(key)
+      else if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta') runner.drafts.text(key, frame.chunk.text)
     }
   })
   ctx.on('session/event', (session, event) => {
@@ -1633,13 +1550,7 @@ export function install(rt) {
     if (event.type === 'turn/start' || event.type === 'turn/end') statusSteps.delete(session.id)
     place.sessionEvent(session, event)
     if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
-      for (const runner of runners.values()) {
-        for (const [key, attempt] of runner.drafts) {
-          if (attempt.sessionId === session.id
-            && (event.data?.turn === undefined || attempt.turn === event.data.turn)
-            && (event.data?.step === undefined || attempt.step === event.data.step)) finishDraft(runner, key)
-        }
-      }
+      for (const runner of runners.values()) runner.drafts?.endStep(session.id, event.data?.turn, event.data?.step)
     }
     const botId = rt.chatOwners.get(session.id)
     if (botId === undefined) {
