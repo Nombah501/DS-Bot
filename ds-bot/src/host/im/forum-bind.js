@@ -67,7 +67,8 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
       saved.topics[key] = { target, name: nameOf(target), at: Date.now() }
       await rt.save()
       const label = nameOf(target)
-      held.card.settled = settledCard(held.card, text('bindBound', { target: label }), [held.card.options[Number(match[2])].label])
+      // The pressed choice settles under the target's current name.
+      held.card.settled = settledCard({ options: [{ label }] }, text('bindBound', { target: label }), [label])
       await rt.save()
       if (held.messageId !== undefined) await handleOf(conn.id)?.editCard?.(action.chat, held.messageId, held.card, held.cardFormat)
     },
