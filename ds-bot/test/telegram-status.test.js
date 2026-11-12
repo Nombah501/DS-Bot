@@ -113,6 +113,20 @@ test('S1: Stop widget queries acknowledge promptly and authenticate the stored T
   assert.equal(stopped.params.message_thread_id, 102)
 })
 
+test('S1: a Stop widget press without a Telegram language answers in the chat language', async t => {
+  const s = await setup(t)
+  s.sessionEvent('turn/start', { turn: 1 }, 'b')
+  s.message('/status', { message_thread_id: 102, from: { id: 9, first_name: 'Ann', language_code: 'ru' } })
+  const pin = await s.request('pinChatMessage')
+  s.pushUpdate({ widget_query: {
+    id: 'stop-ru', chat: { id: 5, type: 'private' }, from: { id: 9 },
+    message_id: pin.params.message_id, chat_instance: 'private-5', type: { type: 'data' }, data: 'stop',
+  } })
+  await until(() => s.agentOf('b').cancelled)
+  const stopped = await s.request('sendMessage', p => p.text === 'Остановлено.' || p.text === 'Stopped.')
+  assert.equal(stopped.params.text, 'Остановлено.')
+})
+
 test('S1: private root status supports Russian, waiting Cards and restart without duplicates', async t => {
   const s = await startBridge(t, { timeout: 10000 })
   s.sessionEvent('turn/start', { turn: 1 })

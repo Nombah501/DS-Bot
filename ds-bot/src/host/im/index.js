@@ -296,7 +296,9 @@ export function install(rt) {
       || action.type !== 'data' || action.data !== 'stop' || !paired(conn, action.sender.id)) return
     const record = runners.get(conn.id)?.panels?.find(action.chat.key, action.messageId)
     if (record === undefined || !place.may(conn, action.sender.id, record.target)) return
-    await stopTarget(conn, record.chat, record.target, textForPerson(conn, action.sender))
+    // A widget press may not carry the sender's language; the chat's last one stands in.
+    const sender = { id: action.sender.id, languageCode: action.sender.languageCode ?? conn.chats?.[action.chat.key]?.languageCode }
+    await stopTarget(conn, record.chat, record.target, textForPerson(conn, sender))
   }
 
   const questionById = (id) => {
