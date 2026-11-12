@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { imPlatform } from '../../shared/im-platforms.js'
 import { accessTargets, addressKey } from './topics.js'
 import { settledCard } from './cards.js'
 
@@ -9,7 +10,7 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
   const admin = async (conn, chat, sender, action) => {
     const handle = handleOf(conn.id)
     try {
-      if (typeof handle?.isAdmin === 'function' && await handle.isAdmin(chat, sender.id)) return true
+      if (imPlatform(conn.platform)?.forumAdmin === true && handle !== undefined && await handle.isAdmin(chat, sender.id)) return true
     } catch (error) {
       rt.warn('ds-bot: forum admin check failed: %s', rt.redactSecrets(String(error?.message ?? error)))
     }
@@ -70,7 +71,8 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
       // The pressed choice settles under the target's current name.
       held.card.settled = settledCard({ options: [{ label }] }, text('bindBound', { target: label }), [label])
       await rt.save()
-      if (held.messageId !== undefined) await handleOf(conn.id)?.editCard?.(action.chat, held.messageId, held.card, held.cardFormat)
+      const handle = handleOf(conn.id)
+      if (held.messageId !== undefined && imPlatform(conn.platform)?.richCards === true && handle !== undefined) await handle.editCard(action.chat, held.messageId, held.card, held.cardFormat)
     },
   }
 }

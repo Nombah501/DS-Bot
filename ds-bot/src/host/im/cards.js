@@ -115,7 +115,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   const edits = async (conn) => {
     const handle = handleOf(conn.id)
     const data = records(conn.id)
-    if (handle?.edit === undefined || data === undefined) return
+    if (handle === undefined || imPlatform(conn.platform)?.edit !== true || data === undefined) return
     for (const entries of Object.values(data.cards)) {
       for (const entry of entries) {
         if (entry.deleted || (entry.answer === undefined && entry.edited !== false) || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || entry.edited === true) continue
@@ -123,9 +123,9 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
         if (address === undefined) continue
         entry.edited = true
         const body = entry.answer === undefined ? entry.text : entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${textForChat(conn, entry.chatKey)('answered')})`
-        const edit = entry.receiverUserId !== undefined && typeof handle.editPrivateCard === 'function'
+        const edit = entry.receiverUserId !== undefined && imPlatform(conn.platform)?.privateCards === true
           ? handle.editPrivateCard(address, entry, entry.card)
-          : entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof handle.editCard === 'function'
+          : entry.card !== undefined && imPlatform(conn.platform)?.richCards === true
             ? handle.editCard(address, entry.messageId, entry.card, entry.cardFormat)
             : handle.edit(address, entry.messageId, { text: body })
         const pending = edit.catch(error => {
@@ -160,12 +160,12 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
       for (const { chat, target, output } of targets) {
         const handle = handleOf(conn.id)
         const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
-          && imPlatform(conn.platform)?.privateCards === true && typeof handle?.sendPrivateCard === 'function'
+          && handle !== undefined && imPlatform(conn.platform)?.privateCards === true
         const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + PRIVATE_MS } : {}) }
         const text = privateCard ? textForPerson(conn, initiator.sender) : textForChat(conn, chat.key)
         const rendered = typeof body === 'function' ? body(text) : body
         const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
-        const card = imPlatform(conn.platform)?.richCards === true && typeof handle?.sendCard === 'function' ? structured?.(text) : undefined
+        const card = handle !== undefined && imPlatform(conn.platform)?.richCards === true ? structured?.(text) : undefined
         await record(conn.id, cardKey, chat, undefined, rendered, card, undefined, copy)
         enqueue(conn, addressKey(chat), { chat, target, output, text: rendered, buttons: renderedButtons, card, ...copy, after: async (sent) => {
           await record(conn.id, cardKey, chat, sent?.messageId, rendered, card, sent?.cardFormat, { ...copy, ...(sent?.ephemeralMessageId === undefined ? {} : { ephemeralMessageId: sent.ephemeralMessageId, ephemeralMessageIds: sent.ephemeralMessageIds }) })
@@ -269,7 +269,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
         }
         if (touched) store.save(conn.id)
         await edits(conn)
-        const editable = handleOf(conn.id)?.edit !== undefined
+        const editable = handleOf(conn.id) !== undefined && imPlatform(conn.platform)?.edit === true
         let pruned = false
         for (const [cardKey, entries] of Object.entries(data.cards)) {
           if (open(cardKey, entries)) continue

@@ -1,5 +1,7 @@
 // Telegram keeps physical chats separate from Topic bindings. botId is the
 // connection's Default Bot, not a restriction on the team's reachable targets.
+import { imPlatform } from '../../shared/im-platforms.js'
+
 export const addressKey = chat => chat.threadId === undefined ? chat.key : JSON.stringify([chat.key, chat.threadId])
 export const sameTarget = (left, right) => left !== undefined && right !== undefined && left.botId === right.botId && left.roomId === right.roomId
 // A Topic that still carries output: not closed and not replaced by a new thread.
@@ -55,14 +57,14 @@ export function privateTopicCreator(rt, handleOf, textForChat) {
     const run = (async () => {
       const chat = conn.chats?.[chatKey]
       const handle = handleOf(conn.id)
-      if (chat?.kind !== 'direct' || handle === undefined) return
+      if (imPlatform(conn.platform)?.topics !== true || chat?.kind !== 'direct' || handle === undefined) return
       const person = conn.paired?.find(person => person.id === chat.personId)
       for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
         if (!topicLive(topic)) continue
         const name = (topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId))?.name
         const address = { key: chatKey, kind: chat.kind, threadId: Number(threadId) }
         const reason = name === undefined ? 'topicDeleted' : !allows(person, topic.target) ? 'topicRevoked' : undefined
-        if (reason !== undefined && typeof handle.closeTopic === 'function') {
+        if (reason !== undefined) {
           if (!topic.notified) {
             await handle.send(address, { text: textForChat(conn, chatKey)(reason, { name: topic.name }) })
             topic.notified = true
@@ -73,13 +75,13 @@ export function privateTopicCreator(rt, handleOf, textForChat) {
           await rt.save()
           continue
         }
-        if (name !== undefined && topic.name !== name && typeof handle.renameTopic === 'function') {
+        if (name !== undefined && topic.name !== name) {
           await handle.renameTopic({ key: chatKey, kind: chat.kind, threadId: Number(threadId) }, name)
           topic.name = name
           await rt.save()
         }
       }
-      if (conn.account?.hasTopicsEnabled !== true || chat.kind !== 'direct' || person === undefined || typeof handle.createTopic !== 'function') return
+      if (conn.account?.hasTopicsEnabled !== true || chat.kind !== 'direct' || person === undefined) return
       for (const target of accessTargets(person, rt.state)) {
         if (Object.values(chat.topics ?? {}).some(topic => topicLive(topic) && sameTarget(topic.target, target))) continue
         const name = (target.botId !== undefined ? rt.botOf(target.botId) : rt.roomOf(target.roomId))?.name
@@ -102,7 +104,7 @@ export function topicRestorer(rt, handleOf, deliverable) {
     const chat = conn.chats?.[address.key]
     const topic = chat?.topics?.[address.threadId]
     const handle = handleOf(conn.id)
-    if (chat?.kind !== 'direct' || topic === undefined || topic.closed || typeof handle?.createTopic !== 'function') return undefined
+    if (imPlatform(conn.platform)?.topics !== true || chat?.kind !== 'direct' || topic === undefined || topic.closed || handle === undefined) return undefined
     if (topic.replacedBy !== undefined) return topic.replacedBy
     if (!deliverable(conn, address, topic.target)) return undefined
     const target = topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId)
