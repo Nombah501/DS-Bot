@@ -24,7 +24,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   const privateQueued = new WeakMap()
   const editing = new WeakMap()
   const pendingClaims = new Map()
-  // Disabled connections may load their journal only after the source was answered.
+  // Keep the answer available to every read while its unloaded journal is read in.
   const records = (id, data = store.peek(id)) => {
     const pending = pendingClaims.get(id)
     if (data !== undefined && pending !== undefined) {
@@ -73,6 +73,8 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
       if (pending.has(cardKey)) return
       const request = { answer, selected }
       pending.set(cardKey, request)
+      request.loading = store.of(conn.id).then(loaded => records(conn.id, loaded))
+        .catch(error => warn('ds-bot: im pending card answer not saved: %s', error))
       return async () => {
         if (pendingClaims.get(conn.id)?.get(cardKey) === request) {
           pending.delete(cardKey)
@@ -139,6 +141,8 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   }
 
   return {
+    // Shutdown must wait for applying claims, not just reading their runtime files.
+    flushClaims: () => Promise.all([...pendingClaims.values()].flatMap(pending => [...pending.values()].map(request => request.loading))),
     // A re-enabled connection must also edit answers claimed while it was off.
     load: async id => {
       const data = records(id, await store.of(id))

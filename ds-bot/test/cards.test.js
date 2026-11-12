@@ -8,7 +8,7 @@ const ann = { id: '9', languageCode: 'en' }
 
 // A Card journal over one Telegram connection, an in-memory runtime store and a
 // scripted adapter: queued jobs wait in `queue` until `deliver` sends the oldest.
-const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded = false, loadGate } = {}) => {
+const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded = false, loadGate, onLoad = () => {}, onSave = () => {} } = {}) => {
   const data = { cards: {} }
   let loaded = !unloaded
   const calls = []
@@ -29,7 +29,7 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded 
     deletePrivateCard: async (chat, copy) => { calls.push(['deletePrivateCard', chat.key, copy.ephemeralMessageId]) },
   }
   const cards = cardJournal({
-    store: { of: async () => { await loadGate; loaded = true; return data }, peek: () => loaded ? data : undefined, save: () => {} },
+    store: { of: async () => { onLoad(); await loadGate; loaded = true; return data }, peek: () => loaded ? data : undefined, save: () => onSave(data) },
     connections: () => ({ [conn.id]: conn }),
     textForChat: () => key => `<${key}>`,
     textForPerson: () => key => `<${key}>`,
@@ -210,4 +210,27 @@ test('Card journal: a failed pending delivery can reopen its copies after the re
   await rollback()
   assert.equal(b.cards.open(b.conn, forum, 'q:1')?.entry.card.settled, undefined)
   assert.equal(b.calls.at(-1)[3], undefined)
+})
+
+test('Card journal: an unloaded claim loads and saves its selected answer without another journal read', async () => {
+  const gate = Promise.withResolvers()
+  const saved = []
+  const b = bench({ unloaded: true, loadGate: gate.promise, onSave: data => saved.push(structuredClone(data)) })
+  b.data.cards['q:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, card: structuredClone(question) }]
+  b.cards.claim(b.conn, 'q:1', 'Red', ['Red'])
+  gate.resolve()
+  await new Promise(setImmediate)
+  assert.equal(saved.length, 1, 'a pending claim must persist without a later journal read')
+  assert.deepEqual(saved[0].cards['q:1'][0].card.settled, { answer: 'Red', options: [{ label: 'Red', style: 'success' }] })
+})
+
+test('Card journal: loading an empty journal clears a claim with no matching Card', async () => {
+  let loads = 0
+  const b = bench({ unloaded: true, onLoad: () => { loads++ } })
+  b.cards.claim(b.conn, 'q:1', 'Red', ['Red'])
+  await new Promise(setImmediate)
+  assert.equal(loads, 1, 'even a missing Card must drain its pending claim')
+  b.data.cards['q:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, card: structuredClone(question) }]
+  b.cards.claim(b.conn, 'q:1', 'Blue', ['Blue'])
+  assert.equal(b.data.cards['q:1'][0].answer, 'Blue', 'a drained claim cannot answer a later Card')
 })

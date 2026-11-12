@@ -123,6 +123,91 @@ const gm = (s, senderId, text, { mentioned = true, chat = { key: 'g1', kind: 'gr
 })
 
 
+test('concurrent first runtime loads share the adapter holder and its saved data', async (t) => {
+  const seed = TEAM()
+  seed.im = { connections: { im_load: {
+    id: 'im_load', platform: 'telegram', botId: 'a', settings: {}, secrets: {}, enabled: true,
+    paired: [], requests: [], chats: {}, createdAt: 1,
+  } } }
+  const gate = Promise.withResolvers()
+  const reading = Promise.withResolvers()
+  const readFile = fsp.readFile
+  let reads = 0
+  t.mock.method(fsp, 'readFile', async (path, ...args) => {
+    if (!String(path).endsWith('/im/im_load.json')) return readFile(path, ...args)
+    reads++
+    reading.resolve()
+    await gate.promise
+    return JSON.stringify({ runtime: { cursor: 'loaded' }, cards: {} })
+  })
+  syncBuiltinESMExports()
+  const s = await start({ seed })
+  t.after(async () => {
+    gate.resolve()
+    try { await s.stop() } finally {
+      t.mock.restoreAll()
+      syncBuiltinESMExports()
+    }
+  })
+  await reading.promise
+  await s.rt.save()
+  await new Promise(setImmediate)
+  assert.equal(reads, 1, 'concurrent first loads must share one runtime file read')
+  gate.resolve()
+  for (let attempt = 0; s.fake.env === undefined && attempt < 300; attempt++) await s.flush()
+  assert.ok(s.fake.env, 'the adapter connected after its runtime loaded')
+  s.fake.env.runtime.set({ cursor: 'shared' })
+  await s.ctx.dispose()
+  const saved = JSON.parse(readFileSync(join(s.home, 'im', 'im_load.json'), 'utf8'))
+  assert.equal(saved.runtime.cursor, 'shared', 'the adapter and writer must use the same holder')
+})
+
+test('shutdown waits for an unloaded disabled connection claim before flushing its answer', async (t) => {
+  const seed = TEAM()
+  seed.im = { connections: { im_disabled: {
+    id: 'im_disabled', platform: 'telegram', botId: 'a', settings: {}, secrets: {}, enabled: false,
+    paired: [], requests: [], chats: {}, createdAt: 1,
+  } } }
+  const s = await start({ seed })
+  const gate = Promise.withResolvers()
+  const reading = Promise.withResolvers()
+  t.after(async () => {
+    gate.resolve()
+    try { await s.stop() } finally {
+      t.mock.restoreAll()
+      syncBuiltinESMExports()
+    }
+  })
+  await s.rt.load()
+  await s.rt.teamTools.find(tool => tool.name === 'ask_user').execute({ question: 'Pick a period', options: [{ label: 'Daily' }, { label: 'Weekly' }] }, { agent: { id: 'a' }, callId: 'disabled-question', concludeTurn() {} })
+  const id = s.rt.state.questions.a.id
+  const path = join(s.home, 'im', 'im_disabled.json')
+  mkdirSync(join(s.home, 'im'), { recursive: true })
+  writeFileSync(path, JSON.stringify({ cards: { [`q:${id}`]: [{
+    chatKey: '5', messageId: 700, card: { text: 'Pick a period', options: [{ label: 'Daily' }, { label: 'Weekly' }] },
+  }] } }))
+  const readFile = fsp.readFile
+  t.mock.method(fsp, 'readFile', async (file, ...args) => {
+    if (file === path) {
+      reading.resolve()
+      await gate.promise
+    }
+    return readFile(file, ...args)
+  })
+  syncBuiltinESMExports()
+  const answering = s.rt.answerQuestion('a', id, { selected: ['Weekly'] })
+  await reading.promise
+  await answering
+  let disposed = false
+  const shutdown = s.ctx.dispose().then(() => { disposed = true })
+  await new Promise(setImmediate)
+  assert.equal(disposed, false, 'shutdown must wait for the pending journal load')
+  gate.resolve()
+  await shutdown
+  const saved = JSON.parse(readFileSync(path, 'utf8'))
+  assert.deepEqual(saved.cards[`q:${id}`][0].card.settled, { answer: 'Weekly', options: [{ label: 'Weekly' }] })
+})
+
 test('runtime writes serialize scheduled saves, inbound messages and shutdown', async (t) => {
   const seed = TEAM()
   seed.im = { connections: { im_write: {

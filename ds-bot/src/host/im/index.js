@@ -55,26 +55,32 @@ export function install(rt) {
 
   // ---------------------------------------------------------------- runtime file
   const runtimes = new Map() // id → { data: {runtime, cards, open}, timer, writing }
-  const runtimeOf = async (id) => {
-    let held = runtimes.get(id)
-    if (held !== undefined) return held
-    let data
-    try {
-      data = JSON.parse(await readFile(join(imDir, `${id}.json`), 'utf8'))
-    } catch { data = undefined }
-    held = {
-      data: {
-        runtime: data?.runtime !== null && typeof data?.runtime === 'object' ? data.runtime : {},
-        cards: data?.cards !== null && typeof data?.cards === 'object' ? data.cards : {},
-        requests: data?.requests ?? {},
-        turns: data?.turns ?? {},
-        panels: Array.isArray(data?.panels) ? data.panels : [],
-      },
-      timer: undefined,
-      writing: Promise.resolve(),
-    }
-    runtimes.set(id, held)
-    return held
+  const runtimeLoads = new Map()
+  const runtimeOf = (id) => {
+    const held = runtimes.get(id)
+    if (held !== undefined) return Promise.resolve(held)
+    if (runtimeLoads.has(id)) return runtimeLoads.get(id)
+    const loading = (async () => {
+      let data
+      try {
+        data = JSON.parse(await readFile(join(imDir, `${id}.json`), 'utf8'))
+      } catch { data = undefined }
+      const loaded = {
+        data: {
+          runtime: data?.runtime !== null && typeof data?.runtime === 'object' ? data.runtime : {},
+          cards: data?.cards !== null && typeof data?.cards === 'object' ? data.cards : {},
+          requests: data?.requests ?? {},
+          turns: data?.turns ?? {},
+          panels: Array.isArray(data?.panels) ? data.panels : [],
+        },
+        timer: undefined,
+        writing: Promise.resolve(),
+      }
+      runtimes.set(id, loaded)
+      return loaded
+    })().finally(() => runtimeLoads.delete(id))
+    runtimeLoads.set(id, loading)
+    return loading
   }
   const scheduleWrite = (id) => {
     const held = runtimes.get(id)
@@ -1204,6 +1210,8 @@ export function install(rt) {
       stopped = true
       clearInterval(interval)
       return Promise.all([...runners.keys()].map(stop)).then(async () => {
+        await Promise.all(runtimeLoads.values())
+        await cards.flushClaims()
         for (const held of runtimes.values()) if (held.timer !== undefined) clearTimeout(held.timer)
         await Promise.allSettled([...runtimes.keys()].map(writeRuntime))
       })
