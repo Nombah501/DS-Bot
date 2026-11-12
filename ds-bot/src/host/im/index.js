@@ -1,7 +1,8 @@
 // IM: talk to Bots from chat apps. A connection is one IM bot account bound to a Bot;
 // direct chats reach that Bot, platform group chats can be bound to a DS Bot group.
-// The platform adapters (im/platforms/) own the wire; this module owns pairing,
-// routing, cards and the send queues. Only the dsh holding the team lock connects.
+// The platform adapters (im/platforms/) own the wire; placement.js decides where output
+// goes; this module owns pairing, cards and the send queues. Only the dsh holding the
+// team lock connects.
 import { randomBytes, randomUUID } from 'node:crypto'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,7 +10,8 @@ import { replaceFile } from '../files.js'
 import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
-import { addressKey, allows, canDeliver, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, topicTarget, sameTarget } from './topics.js'
+import { addressKey, allows, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer, sameTarget } from './topics.js'
+import { placement } from './placement.js'
 import { forumBinder } from './forum-bind.js'
 import { statusData, statusPanels } from './status-panel.js'
 
@@ -425,12 +427,24 @@ export function install(rt) {
     },
   })
 
+  const place = placement({
+    connections,
+    store: {
+      * loaded() { for (const [id, held] of runtimes) yield [id, held.data] },
+      of: cardsOf,
+      save: scheduleWrite,
+      saveNow: writeRuntime,
+    },
+    botOf: id => rt.botOf(id),
+    roomOf: id => rt.roomOf(id),
+  })
+
   // ------------------------------------------------------------------ send out
   /** @type {Map<string, {handle:any, queues:Map<string, {jobs:any[], retry?:any}>, statuses:Map}>} */
   const runners = new Map()
   const statuses = new Map()
   const ensurePrivateTopics = privateTopicCreator(rt, id => runners.get(id)?.handle, textFor)
-  const restoreTopic = topicRestorer(rt, id => runners.get(id)?.handle)
+  const restoreTopic = topicRestorer(rt, id => runners.get(id)?.handle, place.deliverable)
   const recoverTopic = async (conn, chat) => {
     const oldThreadId = chat.threadId
     const threadId = await restoreTopic(conn, chat)
@@ -468,68 +482,6 @@ export function install(rt) {
     if (typeof next.error === 'string' && next.error !== '') return statuses.set(id, { ...next, error: rt.redactSecrets(next.error), at: Date.now() })
     return statuses.set(id, { ...next, at: Date.now() })
   }
-  const targetsOf = (conn) => {
-    const out = []
-    for (const [chatKey, saved] of Object.entries(conn.chats ?? {})) {
-      const chat = { ...saved, key: chatKey }
-      const topicMode = imPlatform(conn.platform)?.topics === true
-      const person = conn.paired?.find(person => person.id === chat.personId)
-      if (topicMode && chat.kind === 'direct' && conn.account?.hasTopicsEnabled === true) {
-        for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (!topic.closed && topic.replacedBy === undefined && allows(person, topic.target)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
-        }
-        continue
-      }
-      if (topicMode && chat.kind === 'group' && chat.isForum === true) {
-        const target = topicTarget(conn, chat)
-        if (target !== undefined) out.push({ chatKey, chat: { ...chat, threadId: 1 }, target })
-        for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (threadId !== '1') out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
-        }
-        continue
-      }
-      const target = chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
-      if (!topicMode || chat.kind !== 'direct' || chat.personId === undefined || allows(person, target)) out.push({ chatKey, chat, target })
-      if (topicMode && chat.kind === 'group') {
-        for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (!topic.closed && topic.replacedBy === undefined) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
-        }
-      }
-    }
-    return out
-  }
-  // Chats of this connection that listen to a Bot's own chat or a group.
-  const listeners = (conn, match) => targetsOf(conn).filter(({ target }) => {
-    if (match.botId !== undefined) return target?.botId === match.botId && rt.botOf(target.botId) !== undefined
-    if (match.roomId !== undefined) return target?.roomId === match.roomId && rt.roomOf(target.roomId) !== undefined
-    return false
-  })
-
-  // A Bot turn has one Telegram origin across every connection. A revoked origin
-  // becomes autonomous work, never a broadcast to other group bindings.
-  const botTargets = (conn, botId, sessionId, cards = false) => {
-    const targets = listeners(conn, { botId })
-    if (imPlatform(conn.platform)?.topics !== true) return targets
-    const initiator = [...runtimes.values()].map(held => held.data.turns[sessionId]?.initiator).find(Boolean)
-    const originConn = connections()[initiator?.connectionId]
-    if (originConn?.enabled !== false && imPlatform(originConn?.platform)?.topics === true) {
-      const saved = originConn.chats?.[initiator.chatKey]
-      const chat = { ...saved, key: initiator.chatKey, ...(initiator.threadId === undefined ? {} : { threadId: initiator.threadId }) }
-      if (saved?.isForum === true && chat.threadId === undefined) chat.threadId = 1
-      const topic = saved?.topics?.[chat.threadId ?? (saved?.isForum ? 1 : undefined)]
-      if (saved !== undefined && !topic?.closed && topic?.replacedBy === undefined
-        && resolveTarget(originConn, chat)?.botId === botId
-        && allows(originConn.paired?.find(person => person.id === initiator.sender.id), { botId })) {
-        return conn.id === originConn.id ? [{ chatKey: chat.key, chat, target: { botId } }] : []
-      }
-    }
-    if (conn.nonTelegramTurns === 'none' || (conn.nonTelegramTurns === 'cards' && !cards)) return []
-    return targets.filter(({ chat }) => chat.kind === 'direct'
-      && allows(conn.paired?.find(person => person.id === chat.personId), { botId }))
-  }
-  const outputTargets = (conn, match, sessionId, cards = false) => match.roomId === undefined
-    ? botTargets(conn, match.botId, sessionId, cards) : listeners(conn, match)
-
   const failClass = (error) => {
     if (error?.permanent === true || (typeof error?.status === 'number' && error.status >= 400 && error.status < 500 && error.status !== 429)) return 'permanent'
     if (error?.unknown === true || error?.stopped === true) return 'drop'
@@ -559,12 +511,9 @@ export function install(rt) {
       try {
         const draft = runner.draftChats.get(chatKey)?.sending
         if (draft !== undefined) await draft
-        if (imPlatform(conn.platform)?.topics === true && job.chat.threadId !== undefined) {
-          while ((fresh(conn.id) ?? conn).chats?.[job.chat.key]?.topics?.[job.chat.threadId]?.replacedBy !== undefined) {
-            job.chat.threadId = (fresh(conn.id) ?? conn).chats[job.chat.key].topics[job.chat.threadId].replacedBy
-          }
-        }
-        if (imPlatform(conn.platform)?.topics === true && !canDeliver(fresh(conn.id) ?? conn, job.chat, job.target)) {
+        // In place: a Card's `after` keeps this address object and records the moved Topic.
+        place.follow(conn, job.chat)
+        if (!place.deliverable(conn, job.chat, job.target)) {
           queue.jobs.shift()
           continue
         }
@@ -598,7 +547,7 @@ export function install(rt) {
     }
   }
   const sendText = (conn, chat, body, buttons, after) => enqueue(conn, addressKey(chat), { chat, text: body, buttons, after })
-  const sendTo = (conn, chatKey, chat, body, buttons, after, rich = false) => enqueue(conn, addressKey(chat), { chat, target: resolveTarget(conn, chat), text: body, buttons, after, ...(rich && imPlatform(conn.platform)?.richMessages === true ? { rich: true } : {}) })
+  const sendTo = (conn, chatKey, chat, body, buttons, after, rich = false) => enqueue(conn, addressKey(chat), { chat, target: place.targetOf(conn, chat), text: body, buttons, after, ...(rich && imPlatform(conn.platform)?.richMessages === true ? { rich: true } : {}) })
 
   // Drafts never enter the durable retry queue: only its latest pending text matters.
   const flushDraft = (conn, chatKey) => {
@@ -616,9 +565,9 @@ export function install(rt) {
     }
     const copy = held.pending
     held.pending = undefined
-    if (copy.ended || !canDeliver(fresh(conn.id) ?? conn, copy.chat, copy.target)) return
-    if (!outputTargets(fresh(conn.id) ?? conn, copy.attempt.match, copy.attempt.sessionId)
-      .some(place => addressKey(place.chat) === addressKey(copy.chat))) return
+    if (copy.ended || !place.deliverable(conn, copy.chat, copy.target)) return
+    if (!place.places(conn, copy.attempt.match, copy.attempt.sessionId, 'draft')
+      .some(where => addressKey(where.chat) === addressKey(copy.chat))) return
     held.lastAt = Date.now()
     held.sending = Promise.resolve(runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text }))
       .catch(async caught => {
@@ -626,7 +575,7 @@ export function install(rt) {
         if (runners.get(conn.id) !== runner) return
         if (imPlatform(conn.platform)?.topics === true && error?.topicMissing === true) {
           try {
-            if (await recoverTopic(fresh(conn.id) ?? conn, copy.chat) && !copy.ended && canDeliver(fresh(conn.id) ?? conn, copy.chat, copy.target)) {
+            if (await recoverTopic(fresh(conn.id) ?? conn, copy.chat) && !copy.ended && place.deliverable(conn, copy.chat, copy.target)) {
               await runner.handle.draft(copy.chat, { draftId: copy.draftId, text: copy.attempt.text })
               return
             }
@@ -666,19 +615,11 @@ export function install(rt) {
     if (target?.roomId !== undefined) return rt.roomOf(target.roomId)?.name
     return undefined
   }
-  const resolveTarget = (conn, chat) => {
-    const target = imPlatform(conn.platform)?.topics === true && chat.key !== undefined
-      ? topicTarget(conn, chat)
-      : chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
-    if (target?.botId !== undefined && rt.botOf(target.botId) !== undefined) return target
-    if (target?.roomId !== undefined && rt.roomOf(target.roomId) !== undefined) return target
-    return undefined
-  }
   const validStatusTarget = (conn, chat, target) => {
     const saved = conn.chats?.[chat.key]
     const topic = saved?.topics?.[chat.threadId ?? (saved?.isForum ? 1 : undefined)]
     return saved !== undefined && !topic?.closed && topic?.replacedBy === undefined
-      && sameTarget(resolveTarget(conn, chat), target)
+      && sameTarget(place.targetOf(conn, chat), target)
   }
 
   // Shared Stop path for /stop, Drafts and the Status panel.
@@ -698,7 +639,7 @@ export function install(rt) {
       const copy = attempt.copies.find(copy => copy.draftId === draftId && copy.chat.key === chat.key && copy.chat.threadId === chat.threadId && !copy.ended)
       if (copy === undefined) continue
       const current = conn.chats?.[chat.key]
-      const target = current === undefined ? undefined : resolveTarget(conn, { ...current, ...chat })
+      const target = current === undefined ? undefined : place.targetOf(conn, { ...current, ...chat })
       if (imPlatform(conn.platform)?.topics === true && !allows(conn.paired?.find(person => person.id === current?.personId), target)) return
       if (target === undefined || target.botId !== copy.target.botId || target.roomId !== copy.target.roomId) return
       await stopTarget(conn, { ...copy.chat, languageCode: current.languageCode }, target)
@@ -845,7 +786,7 @@ export function install(rt) {
       await sendText(conn, msg.chat, text('language', { language: person.language ?? 'auto' }))
       return
     }
-    const target = resolveTarget(conn, { ...chat, ...msg.chat })
+    const target = place.targetOf(conn, { ...chat, ...msg.chat })
     if (!NUMBERS.test(body) && imPlatform(conn.platform)?.topics === true && target !== undefined && !allows(conn.paired?.find(person => person.id === msg.sender.id), target)) {
       await sendText(conn, msg.chat, text('denied'))
       return
@@ -940,16 +881,11 @@ export function install(rt) {
     }
     if (content.length === 0) return
     const requestId = `im:${conn.platform}:${randomUUID()}`
-    const data = await cardsOf(conn.id)
-    if (imPlatform(conn.platform)?.privateCards === true) {
-      data.requests[requestId] = { sender: msg.sender, connectionId: conn.id, chatKey: msg.chat.key, ...(msg.chat.threadId === undefined ? {} : { threadId: msg.chat.threadId }) }
-      await writeRuntime(conn.id)
-    }
+    await place.asked(conn, requestId, msg.sender, msg.chat)
     try {
       await rt.sendUser({ sessionId, content, requestId })
     } catch (error) {
-      delete data.requests[requestId]
-      scheduleWrite(conn.id)
+      await place.unasked(conn, requestId)
       throw error
     }
   }
@@ -1141,7 +1077,7 @@ export function install(rt) {
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
-        await sendCard(conn, cardKey, botTargets(conn, botId, sessionId, true), text => cardText.question(bot.name, question, text), buttons,
+        await sendCard(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => cardText.question(bot.name, question, text), buttons,
           text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
       }
       // Secret requests: text only — the key is typed on the computer or phone.
@@ -1151,7 +1087,7 @@ export function install(rt) {
         for (const request of list) {
           const cardKey = `s:${request.id}`
           if (request.status !== 'pending' || data.cards[cardKey] !== undefined) continue
-          await sendCard(conn, cardKey, botTargets(conn, botId, request.sessionId, true), text => text('secretAsk', { bot: bot.name, name: request.name }))
+          await sendCard(conn, cardKey, place.places(conn, { botId }, request.sessionId, 'card'), text => text('secretAsk', { bot: bot.name, name: request.name }))
         }
       }
       // Views awaiting a reply: text form only.
@@ -1162,7 +1098,7 @@ export function install(rt) {
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const form = viewCardText({ title: view.title, view: view.view })
-        await sendCard(conn, cardKey, botTargets(conn, botId, sessionId, true), text => `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
+        await sendCard(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
       }
     }
   }
@@ -1312,7 +1248,7 @@ export function install(rt) {
           snapshot: record => statusData(rt, record.target, textFor(fresh(conn.id) ?? conn, record.chat), statusSteps),
           valid: record => {
             const current = fresh(conn.id)
-            return current !== undefined && canDeliver(current, record.chat, record.target)
+            return current !== undefined && place.deliverable(current, record.chat, record.target)
               && (record.target.botId !== undefined ? rt.botOf(record.target.botId) : rt.roomOf(record.target.roomId)) !== undefined
           },
           save: () => scheduleWrite(conn.id),
@@ -1328,10 +1264,13 @@ export function install(rt) {
       if (typeof runner.handle?.typing === 'function') {
         runner.typing = setInterval(() => {
           const current = fresh(conn.id) ?? conn
-          for (const { chatKey, chat, target } of targetsOf(current)) {
-            if (target?.botId !== undefined && imPlatform(current.platform)?.topics === true
-              && !botTargets(current, target.botId, rt.chatOf(target.botId)).some(place => addressKey(place.chat) === addressKey(chat))) continue
-            if (target !== undefined && busyOf(target)) void runner.handle.typing({ key: chatKey, kind: chat.kind, title: chat.title, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }) }).catch?.(() => {})
+          const owners = [...Object.keys(state.bots).map(botId => ({ botId })), ...Object.keys(state.rooms).map(roomId => ({ roomId }))]
+          for (const owner of owners) {
+            if (!busyOf(owner)) continue
+            const sessionId = owner.botId === undefined ? owner.roomId : rt.chatOf(owner.botId)
+            for (const { chatKey, chat } of place.places(current, owner, sessionId, 'typing')) {
+              void runner.handle.typing({ key: chatKey, kind: chat.kind, title: chat.title, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }) }).catch?.(() => {})
+            }
           }
         }, TYPING_MS)
         runner.typing.unref?.()
@@ -1539,7 +1478,7 @@ export function install(rt) {
         if (imPlatform(conn.platform)?.topics === true) await ensurePrivateTopics(conn, request.chatKey)
         const chat = conn.chats[request.chatKey]
         const text = textFor(conn, chat)
-        const target = resolveTarget(conn, chat)
+        const target = place.targetOf(conn, chat)
         const name = target === undefined ? undefined : targetName(conn, target)
         await sendText(conn, { key: request.chatKey, kind: request.chatKind, title: chat.title },
           conn.account?.hasTopicsEnabled === true ? text('paired') : name === undefined ? text(request.chatKind === 'group' ? 'unboundGroup' : 'unbound') : text('connected', { target: name }))
@@ -1678,9 +1617,9 @@ export function install(rt) {
         finishDraft(runner, key)
       } else if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta') {
         attempt.text += frame.chunk.text
-        const targets = outputTargets(conn, attempt.match, agent.id).filter(place => place.chat.kind === 'direct')
+        const targets = place.places(conn, attempt.match, agent.id, 'draft')
         for (const copy of attempt.copies) {
-          if (!targets.some(place => addressKey(place.chat) === addressKey(copy.chat))) copy.ended = true
+          if (!targets.some(where => addressKey(where.chat) === addressKey(copy.chat))) copy.ended = true
         }
         for (const { chat, target } of targets) {
           if (!attempt.copies.some(copy => !copy.ended && addressKey(copy.chat) === addressKey(chat))) {
@@ -1701,25 +1640,7 @@ export function install(rt) {
   ctx.on('session/event', (session, event) => {
     if (event.type === 'step/start' && Number.isSafeInteger(event.data?.step)) statusSteps.set(session.id, event.data.step)
     if (event.type === 'turn/start' || event.type === 'turn/end') statusSteps.delete(session.id)
-    const initiatorRpcId = event.type === 'user/message' ? event.data?.source?.rpcId : undefined
-    const request = initiatorRpcId === undefined ? undefined : [...runtimes.entries()]
-      .filter(([id]) => connections()[id] !== undefined).map(([, held]) => held.data.requests[initiatorRpcId]).find(Boolean)
-    for (const [id, held] of runtimes) {
-      if (imPlatform(connections()[id]?.platform)?.privateCards !== true
-        || !['turn/start', 'user/message', 'turn/end'].includes(event.type)) continue
-      const data = held.data
-      if (event.type === 'turn/start') data.turns[session.id] = { turn: event.data.turn }
-      if (event.type === 'user/message') {
-        const turn = data.turns[session.id]
-        if (turn !== undefined && turn.opened !== true) {
-          turn.opened = true
-          if (request !== undefined) turn.initiator = request
-        }
-        if (request !== undefined) delete data.requests[initiatorRpcId]
-      }
-      if (event.type === 'turn/end') delete data.turns[session.id]
-      scheduleWrite(id)
-    }
+    place.sessionEvent(session, event)
     if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
       for (const runner of runners.values()) {
         for (const [key, attempt] of runner.drafts) {
@@ -1743,7 +1664,7 @@ export function install(rt) {
       const body = item.kind === 'bot' ? item.text : viewCardText({ title: item.title, view: item.view }) || (item.title ?? '')
       for (const conn of Object.values(connections())) {
         if (!runners.has(conn.id)) continue
-        for (const { chatKey, chat } of botTargets(conn, botId, session.id, item.kind === 'view')) sendTo(conn, chatKey, chat, body, undefined, undefined, item.kind === 'bot')
+        for (const { chatKey, chat } of place.places(conn, { botId }, session.id, item.kind === 'view' ? 'card' : 'message')) sendTo(conn, chatKey, chat, body, undefined, undefined, item.kind === 'bot')
       }
     }
   })
@@ -1753,7 +1674,7 @@ export function install(rt) {
     const body = `**${line.who}**: ${line.text}`
     for (const conn of Object.values(connections())) {
       if (!runners.has(conn.id)) continue
-      for (const { chatKey, chat } of listeners(conn, { roomId: room.id })) sendTo(conn, chatKey, chat, body, undefined, undefined, true)
+      for (const { chatKey, chat } of place.places(conn, { roomId: room.id }, undefined, 'message')) sendTo(conn, chatKey, chat, body, undefined, undefined, true)
     }
   })
 
@@ -1764,9 +1685,9 @@ export function install(rt) {
           const runner = runners.get(conn.id)
           if (runner === undefined) continue
           const bot = rt.botOf(data.botId)
-          const targets = outputTargets(conn, data.roomId === undefined ? { botId: data.botId } : { roomId: data.roomId }, data.sessionId, true)
+          const targets = place.places(conn, data.roomId === undefined ? { botId: data.botId } : { roomId: data.roomId }, data.sessionId, 'card')
           const buttons = imPlatform(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
-          const initiator = (await cardsOf(conn.id)).turns[data.sessionId]?.initiator
+          const initiator = await place.initiatorOf(conn, data.sessionId)
           await sendCard(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
             text => ({
               text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),

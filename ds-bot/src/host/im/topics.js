@@ -45,24 +45,6 @@ export function accessTargets(person, state) {
   ].filter(target => allows(person, target))
 }
 
-export function topicTarget(conn, address) {
-  const chat = conn.chats?.[address.key]
-  if (chat === undefined) return undefined
-  if (chat.kind === 'group' && chat.isForum === true && (address.threadId === undefined || address.threadId === 1)) {
-    return chat.topics?.[1]?.target ?? (conn.botId === undefined || conn.botId === '' ? undefined : { botId: conn.botId })
-  }
-  if (address.threadId !== undefined) return chat.topics?.[address.threadId]?.target
-  return chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
-}
-
-export function canDeliver(conn, address, target) {
-  if (target === undefined || address.kind !== 'direct') return true
-  if (address.threadId !== undefined && conn.chats?.[address.key]?.topics?.[address.threadId]?.closed) return false
-  const chat = conn.chats?.[address.key]
-  return sameTarget(topicTarget(conn, address), target)
-    && allows(conn.paired?.find(person => person.id === chat?.personId), target)
-}
-
 export function privateTopicCreator(rt, handleOf, textFor) {
   const pending = new Map()
   return function ensurePrivateTopics(conn, chatKey) {
@@ -112,7 +94,7 @@ export function privateTopicCreator(rt, handleOf, textFor) {
   }
 }
 
-export function topicRestorer(rt, handleOf) {
+export function topicRestorer(rt, handleOf, deliverable) {
   const pending = new Map()
   return async (conn, address) => {
     const chat = conn.chats?.[address.key]
@@ -120,7 +102,7 @@ export function topicRestorer(rt, handleOf) {
     const handle = handleOf(conn.id)
     if (chat?.kind !== 'direct' || topic === undefined || topic.closed || typeof handle?.createTopic !== 'function') return undefined
     if (topic.replacedBy !== undefined) return topic.replacedBy
-    if (!canDeliver(conn, address, topic.target)) return undefined
+    if (!deliverable(conn, address, topic.target)) return undefined
     const target = topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId)
     if (target === undefined) return undefined
     const key = JSON.stringify([conn.id, address.key, address.threadId])

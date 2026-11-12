@@ -1,0 +1,163 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { placement } from '../src/host/im/placement.js'
+
+// One Telegram connection: Ann (9) has a private chat (5) with Topic 101 for Bot a,
+// and a forum (-60) whose thread 40 is bound to Bot a.
+const telegram = (id = 'c1', extra = {}) => ({
+  id, platform: 'telegram', enabled: true, botId: 'a', nonTelegramTurns: 'all',
+  account: { hasTopicsEnabled: true },
+  paired: [{ id: '9', name: 'Ann', access: 'all' }],
+  chats: {
+    5: { kind: 'direct', personId: '9', topics: { 101: { target: { botId: 'a' }, name: 'Chief' } } },
+    '-60': { kind: 'group', isForum: true, topics: { 40: { target: { botId: 'a' } } } },
+  },
+  ...extra,
+})
+
+const setup = (conns) => {
+  const byId = Object.fromEntries(conns.map(conn => [conn.id, conn]))
+  // Every started connection has its runtime loaded, as start() does in production.
+  const files = new Map(conns.map(conn => [conn.id, { requests: {}, turns: {} }]))
+  const store = {
+    loaded: () => files.entries(),
+    of: async id => {
+      if (!files.has(id)) files.set(id, { requests: {}, turns: {} })
+      return files.get(id)
+    },
+    save: () => {},
+    saveNow: async () => {},
+  }
+  const team = { a: { id: 'a', name: 'Chief' }, b: { id: 'b', name: 'Scout' } }
+  const place = placement({ connections: () => byId, store, botOf: id => team[id], roomOf: id => id === 'r' ? { id: 'r' } : undefined })
+  return { place, store, byId }
+}
+
+// A turn of Bot a started by a Telegram message from `address` on `conn`.
+const turnFrom = async ({ place }, conn, address) => {
+  await place.asked(conn, 'im:telegram:1', { id: '9', name: 'Ann' }, address)
+  place.sessionEvent({ id: 'a' }, { type: 'turn/start', data: { turn: 1 } })
+  place.sessionEvent({ id: 'a' }, { type: 'user/message', data: { source: { rpcId: 'im:telegram:1' } } })
+}
+const addresses = list => list.map(({ chat }) => [chat.key, chat.threadId])
+
+test('Placement: output of a turn started in a private Topic goes only to that Topic', async () => {
+  const conn = telegram()
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '5', kind: 'direct', threadId: 101 })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['5', 101]])
+})
+
+// An Off-Telegram turn: the session event carries no Telegram request.
+const offTelegramTurn = ({ place }) => {
+  place.sessionEvent({ id: 'a' }, { type: 'turn/start', data: { turn: 1 } })
+  place.sessionEvent({ id: 'a' }, { type: 'user/message', data: { source: { kind: 'user' } } })
+}
+
+test('Placement: a forum-thread Origin keeps Steps, Drafts and Cards out of the private chat', async () => {
+  const conn = telegram()
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '-60', kind: 'group', threadId: 40 })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['-60', 40]])
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'card')), [['-60', 40]])
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'draft')), [])
+})
+
+test('Placement: a message in the forum General topic reaches the Default Bot there', async () => {
+  const conn = telegram()
+  const s = setup([conn])
+  assert.deepEqual(s.place.targetOf(conn, { key: '-60', kind: 'group' }), { botId: 'a' })
+  await turnFrom(s, conn, { key: '-60', kind: 'group' })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['-60', 1]])
+})
+
+test('Placement: an Off-Telegram turn follows the connection setting, private chats only', async () => {
+  for (const [setting, message, card] of [
+    ['all', [['5', 101]], [['5', 101]]],
+    ['cards', [], [['5', 101]]],
+    ['none', [], []],
+  ]) {
+    const conn = telegram('c1', { nonTelegramTurns: setting })
+    const s = setup([conn])
+    offTelegramTurn(s)
+    assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), message, setting)
+    assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'typing')), message, setting)
+    assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'card')), card, setting)
+  }
+})
+
+test('Placement: without topic mode the private chat root carries the Default Bot', async () => {
+  const conn = telegram('c1', { account: {}, chats: { 5: { kind: 'direct', personId: '9' } } })
+  const s = setup([conn])
+  offTelegramTurn(s)
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['5', undefined]])
+})
+
+test('Placement: an Origin unbound mid-turn makes the rest of the turn Off-Telegram', async () => {
+  const conn = telegram()
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '-60', kind: 'group', threadId: 40 })
+  delete conn.chats['-60'].topics[40]
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['5', 101]])
+})
+
+test('Placement: an Access list without the Bot leaves its turn no place', async () => {
+  const conn = telegram('c1', { paired: [{ id: '9', name: 'Ann', access: { botIds: [], roomIds: [] } }] })
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '5', kind: 'direct', threadId: 101 })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [])
+  assert.equal(s.place.deliverable(conn, { key: '5', kind: 'direct', threadId: 101 }, { botId: 'a' }), false)
+})
+
+test('Placement: a closed Topic takes nothing; a replaced Topic hands over to its replacement', async () => {
+  const closed = telegram()
+  closed.chats[5].topics[101].closed = true
+  const s1 = setup([closed])
+  offTelegramTurn(s1)
+  assert.deepEqual(addresses(s1.place.places(closed, { botId: 'a' }, 'a', 'message')), [])
+  assert.equal(s1.place.deliverable(closed, { key: '5', kind: 'direct', threadId: 101 }, { botId: 'a' }), false)
+
+  const replaced = telegram()
+  replaced.chats[5].topics[101].replacedBy = 102
+  replaced.chats[5].topics[102] = { target: { botId: 'a' }, name: 'Chief' }
+  const s2 = setup([replaced])
+  offTelegramTurn(s2)
+  assert.deepEqual(addresses(s2.place.places(replaced, { botId: 'a' }, 'a', 'message')), [['5', 102]])
+  const queued = { key: '5', kind: 'direct', threadId: 101 }
+  s2.place.follow(replaced, queued)
+  assert.equal(queued.threadId, 102)
+})
+
+test('Placement: an Origin on one connection keeps the turn off every other connection', async () => {
+  const first = telegram('c1')
+  const second = telegram('c2')
+  const s = setup([first, second])
+  await turnFrom(s, first, { key: '5', kind: 'direct', threadId: 101 })
+  assert.deepEqual(addresses(s.place.places(first, { botId: 'a' }, 'a', 'message')), [['5', 101]])
+  assert.deepEqual(addresses(s.place.places(second, { botId: 'a' }, 'a', 'message')), [])
+  assert.deepEqual(await s.place.initiatorOf(second, 'a'), { sender: { id: '9', name: 'Ann' }, connectionId: 'c1', chatKey: '5', threadId: 101 })
+})
+
+test('Placement: a turn ends its Origin; the next turn without Telegram is Off-Telegram', async () => {
+  const conn = telegram()
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '-60', kind: 'group', threadId: 40 })
+  s.place.sessionEvent({ id: 'a' }, { type: 'turn/end', data: { turn: 1 } })
+  offTelegramTurn(s)
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['5', 101]])
+})
+
+test('Placement: a platform without Topics sends to every binding of the Bot', async () => {
+  const conn = { id: 'd1', platform: 'discord', botId: 'a', paired: [{ id: '9' }], chats: { g: { kind: 'group', target: { botId: 'a' } }, d: { kind: 'direct' }, other: { kind: 'group', target: { botId: 'b' } } } }
+  const s = setup([conn])
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['g', undefined], ['d', undefined]])
+})
+
+test('Placement: DS Bot group chat lines go to every binding of the group, whatever the Origin', async () => {
+  const conn = telegram()
+  conn.chats.g = { kind: 'group', target: { roomId: 'r' } }
+  conn.chats['-60'].topics[41] = { target: { roomId: 'r' } }
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '5', kind: 'direct', threadId: 101 })
+  assert.deepEqual(addresses(s.place.places(conn, { roomId: 'r' }, 'r', 'message')), [['-60', 41], ['g', undefined]])
+})
