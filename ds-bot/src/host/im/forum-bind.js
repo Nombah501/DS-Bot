@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { accessTargets, addressKey } from './topics.js'
+import { settledCard } from './cards.js'
 
 // Bind Cards belong to their requesting person and physical Topic, not the
 // Topic's current target: an unbound/inaccessible Topic must still be bindable.
@@ -66,7 +67,7 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
       saved.topics[key] = { target, name: nameOf(target), at: Date.now() }
       await rt.save()
       const label = nameOf(target)
-      held.card.settled = { answer: text('bindBound', { target: label }), options: [{ label }] }
+      held.card.settled = settledCard(held.card, text('bindBound', { target: label }), [held.card.options[Number(match[2])].label])
       await rt.save()
       if (held.messageId !== undefined) await handleOf(conn.id)?.editCard?.(action.chat, held.messageId, held.card, held.cardFormat)
     },

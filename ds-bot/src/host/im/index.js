@@ -1,8 +1,8 @@
 // IM: talk to Bots from chat apps. A connection is one IM bot account bound to a Bot;
 // direct chats reach that Bot, platform group chats can be bound to a DS Bot group.
 // The platform adapters (im/platforms/) own the wire; placement.js decides where output
-// goes; this module owns pairing, cards and the send queues. Only the dsh holding the
-// team lock connects.
+// goes; cards.js keeps the Card journal; this module owns pairing, Card answers and the
+// send queues. Only the dsh holding the team lock connects.
 import { randomBytes, randomUUID } from 'node:crypto'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -13,6 +13,7 @@ import { adapters } from './platforms/index.js'
 import { addressKey, cleanAccess, migrateTopics, privateTopicCreator, topicRestorer } from './topics.js'
 import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
+import { cardJournal } from './cards.js'
 import { forumBinder } from './forum-bind.js'
 import { statusData, statusPanels } from './status-panel.js'
 
@@ -360,42 +361,7 @@ export function install(rt) {
       },
     }
   }
-  // Sent cards: cardKey → [{ chatKey, messageId, answer? }]. Persisted so a restart
-  // does not send a card twice; an `answer` marks it settled from this side.
   const cardsOf = async (id) => (await runtimeOf(id)).data
-  const markCard = async (id, cardKey, chat, messageId, body, card, cardFormat, copy = {}) => {
-    const data = await cardsOf(id)
-    const entries = data.cards[cardKey] ?? []
-    const held = entries.find(entry => entry.chatKey === chat.key && entry.threadId === chat.threadId && entry.receiverUserId === copy.receiverUserId)
-    if (held !== undefined) {
-      held.messageId = messageId ?? held.messageId
-      held.text = body ?? held.text
-      held.card ??= card
-      held.cardFormat = cardFormat ?? held.cardFormat
-      Object.assign(held, copy)
-    } else {
-      entries.push({ chatKey: chat.key, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }), messageId, text: body, ...(card === undefined ? {} : { card }), ...copy })
-    }
-    data.cards[cardKey] = entries
-    scheduleWrite(id)
-  }
-  const settleCard = async (id, cardKey, answer, selected) => {
-    const data = await cardsOf(id)
-    const entries = data.cards[cardKey]
-    if (entries === undefined) return
-    for (const entry of entries) {
-      if (entry.answer !== undefined) continue
-      entry.answer = typeof answer === 'function' ? answer(textFor(connections()[id], entry.receiverUserId === undefined ? connections()[id]?.chats?.[entry.chatKey] : entry)) : answer
-      if (entry.card !== undefined) {
-        const labels = selected ?? [entry.answer]
-        entry.card.settled = {
-          answer: entry.answer,
-          options: entry.card.options.filter(option => option.submit !== true && labels.includes(option.label)).map(({ label, style }) => ({ label, ...(style ? { style } : {}) })),
-        }
-      }
-    }
-    scheduleWrite(id)
-  }
 
   // ------------------------------------------------------------- connections
   let topicsMigrated = false
@@ -437,6 +403,17 @@ export function install(rt) {
     botOf: id => rt.botOf(id),
     roomOf: id => rt.roomOf(id),
   })
+  const cards = cardJournal({
+    store: { of: cardsOf, peek: id => runtimes.get(id)?.data, save: scheduleWrite },
+    connections,
+    textFor,
+    handleOf: id => runners.get(id)?.handle,
+    enqueue: (conn, chatKey, job) => enqueue(conn, chatKey, job),
+    paired: (conn, personId) => paired(conn, personId),
+    sourceOpen: conn => sourceOpen(conn),
+    warn: (template, ...args) => rt.warn(template, ...args),
+    readOnly: () => rt.readOnly() !== undefined,
+  })
 
   // ------------------------------------------------------------------ send out
   /** @type {Map<string, {handle:any, queues:Map<string, {jobs:any[], retry?:any}>, statuses:Map}>} */
@@ -450,12 +427,8 @@ export function install(rt) {
     if (threadId === undefined) return false
     chat.threadId = threadId
     runners.get(conn.id)?.drafts?.moved(chat.key, oldThreadId, threadId)
+    await cards.moved(conn.id, chat.key, oldThreadId, threadId)
     const data = await cardsOf(conn.id)
-    for (const entries of Object.values(data.cards)) {
-      for (const entry of entries) {
-        if (entry.chatKey === chat.key && entry.threadId === oldThreadId && entry.messageId === undefined && entry.ephemeralMessageId === undefined) entry.threadId = threadId
-      }
-    }
     for (const panel of data.panels) {
       if (panel.chat.key === chat.key && panel.chat.threadId === oldThreadId) {
         panel.chat.threadId = threadId
@@ -578,14 +551,6 @@ export function install(rt) {
     await stopTarget(conn, { ...record.chat, languageCode: action.sender.languageCode }, record.target)
   }
 
-  // One card this chat was sent and has not answered yet. A button names its own
-  // card, so it must never fall through to a newer card of the same kind.
-  const openCard = (conn, chat, cardKey, action) => {
-    const entries = runtimes.get(conn.id)?.data?.cards[cardKey]
-    const entry = entries?.findLast(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined && !item.deleted
-      && (action?.ephemeralMessageId === undefined || (item.ephemeralMessageId === action.ephemeralMessageId && item.receiverUserId === action.receiverUserId)))
-    return entry === undefined ? undefined : { cardKey, entry }
-  }
   const questionById = (id) => {
     for (const [sessionId, question] of Object.entries(state.questions ?? {})) {
       if (question.id === id) return { sessionId, question }
@@ -594,7 +559,7 @@ export function install(rt) {
   }
   const answerQuestionCard = async (conn, chat, cardKey, labels, action) => {
     const text = textFor(conn, chat)
-    const held = openCard(conn, chat, cardKey)
+    const held = cards.open(conn, chat, cardKey)
     if (held === undefined) return false
     const found = questionById(held.cardKey.slice(2))
     if (found === undefined) {
@@ -605,13 +570,12 @@ export function install(rt) {
     if (valid.length === 0) return false
     try {
       await rt.answerQuestion(found.sessionId, found.question.id, { selected: valid })
-      await settleCard(conn.id, held.cardKey, valid.join(', '))
-      await settledEdits(conn)
+      await cards.settle(conn, held.cardKey, valid.join(', '))
     } catch (error) {
       if (error?.code === 'bot/stale') {
-        await settleCard(conn.id, held.cardKey, text('answered'))
+        await cards.claim(conn, held.cardKey, text('answered'))
         await sendCardReply(conn, chat, text('stale'), action)
-        await settledEdits(conn)
+        await cards.edits(conn)
         return true
       }
       throw error
@@ -620,7 +584,7 @@ export function install(rt) {
   }
   const answerApprovalCard = async (conn, chat, cardKey, choice, sender, action) => {
     const text = textFor(conn, chat)
-    const held = openCard(conn, chat, cardKey, action)
+    const held = cards.open(conn, chat, cardKey, action)
     if (held === undefined) return false
     if (held.entry.receiverUserId !== undefined && (
       sender?.id !== held.entry.receiverUserId
@@ -631,8 +595,7 @@ export function install(rt) {
     }
     try {
       rt.answerApproval(held.cardKey.slice(2), choice)
-      await settleCard(conn.id, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
-      await settledEdits(conn)
+      await cards.settle(conn, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
     } catch (error) {
       if (error?.code === 'bot/stale') {
         await sendCardReply(conn, chat, text('stale'), action)
@@ -647,18 +610,6 @@ export function install(rt) {
     return sendText(conn, chat, body)
   }
 
-  // The chat's newest still-open card, questions and approvals together: a bare
-  // number answers whatever arrived last, not always a question.
-  const newestOpenCard = (conn, chat) => {
-    const data = runtimes.get(conn.id)?.data
-    if (data === undefined) return undefined
-    for (const [cardKey, entries] of Object.entries(data.cards).reverse()) {
-      if (!cardKey.startsWith('q:') && !cardKey.startsWith('a:')) continue
-      const entry = entries.findLast(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined && !item.deleted)
-      if (entry !== undefined) return { cardKey, entry }
-    }
-    return undefined
-  }
   const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, enqueue, sendText, sendCardReply, textFor, may: place.may })
 
   const onMessage = (conn) => async (msg) => {
@@ -741,7 +692,7 @@ export function install(rt) {
           if (msg.chat.kind === 'group' && data.active && imPlatform(conn.platform)?.richCards === true
             && typeof runners.get(conn.id)?.handle?.sendCard === 'function') {
             const key = `t:${randomUUID()}`
-            await sendCard(conn, key, [{ chat: msg.chat, target }], body, undefined,
+            await cards.send(conn, key, [{ chat: msg.chat, target }], body, undefined,
               () => ({ text: body, options: [{ data: `${key}:stop`, label: text('stop') }] }))
           } else {
             sendTo(conn, msg.chat.key, msg.chat, body, undefined, undefined, true)
@@ -754,7 +705,8 @@ export function install(rt) {
     }
     if (NUMBERS.test(body)) {
       const picked = body.trim().split(/\s+/).map(Number)
-      const held = newestOpenCard(conn, msg.chat)
+      // The newest open question or approval: a bare number answers whatever arrived last.
+      const held = cards.newest(conn, msg.chat, cardKey => cardKey.startsWith('q:') || cardKey.startsWith('a:'))
       const denied = held !== undefined && !place.may(conn, msg.sender.id, held.entry.target)
       // Anything that does not clearly answer the newest open card — a stale
       // source, an out-of-range pick, several picks on a single choice — is a
@@ -838,8 +790,7 @@ export function install(rt) {
     const cardKey = data.slice(0, cut)
     const choice = data.slice(cut + 1)
     if (imPlatform(conn.platform)?.statusPanel === true && data.startsWith('t:')) {
-      const entry = runtimes.get(conn.id)?.data.cards[cardKey]?.find(item => item.chatKey === chat.key
-        && item.threadId === chat.threadId && item.messageId === action.messageId)
+      const entry = cards.byMessage(conn, chat, cardKey, action.messageId)
       if (chat.kind !== 'group' || choice !== 'stop' || entry === undefined) {
         await sendCardReply(conn, chat, text('idle'), action)
         return
@@ -849,20 +800,19 @@ export function install(rt) {
         return
       }
       if (entry.answer !== undefined || !statusData(rt, entry.target, text, statusSteps).active) {
-        await settleCard(conn.id, cardKey, text => text('idle'), [])
-        await settledEdits(conn)
+        await cards.settle(conn, cardKey, text => text('idle'), [])
         await sendCardReply(conn, chat, text('idle'), action)
         return
       }
       // Claim this snapshot before cancellation yields, so a second press cannot stop twice.
-      await settleCard(conn.id, cardKey, text => text('stopped'), [])
+      await cards.claim(conn, cardKey, text => text('stopped'), [])
       await stopTarget(conn, chat, entry.target, action)
-      await settledEdits(conn)
+      await cards.edits(conn)
       return
     }
     if (imPlatform(conn.platform)?.topics === true) {
       const key = data.startsWith('m:') ? `q:${cardKey.slice(2)}` : cardKey
-      const target = openCard(conn, chat, key, action)?.entry.target
+      const target = cards.open(conn, chat, key, action)?.entry.target
       if (!place.may(conn, action.sender.id, target)) {
         await sendCardReply(conn, chat, text(target === undefined ? 'stale' : 'denied'), action)
         return
@@ -870,7 +820,7 @@ export function install(rt) {
     }
     if (data.startsWith('m:') && cut > 2 && imPlatform(conn.platform)?.richCards === true) {
       const key = `q:${cardKey.slice(2)}`
-      const held = openCard(conn, chat, key)
+      const held = cards.open(conn, chat, key)
       const found = questionById(cardKey.slice(2))
       const handle = runners.get(conn.id)?.handle
       if (found?.question.multiSelect !== true || held?.entry.card === undefined || typeof handle?.editCard !== 'function') {
@@ -890,8 +840,7 @@ export function install(rt) {
       const option = /^\d+$/.test(choice) ? entry.card.options[Number(choice)] : undefined
       if (option?.checked === undefined || option.data !== data) return
       option.checked = !option.checked
-      scheduleWrite(conn.id)
-      if (entry.messageId !== undefined) await handle.editCard(chat, entry.messageId, entry.card, entry.cardFormat)
+      await cards.redraw(conn, chat, entry)
       return
     }
     if (data.startsWith('q:') && cut > 2) {
@@ -929,77 +878,21 @@ export function install(rt) {
     approval: (id, text) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
   }
 
-  const sendCard = async (conn, cardKey, targets, body, buttons, structured, initiator) => {
-    for (const { chat, target, output } of targets) {
-      const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
-        && imPlatform(conn.platform)?.privateCards === true && typeof runners.get(conn.id)?.handle?.sendPrivateCard === 'function'
-      const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + 5 * 60 * 1000 } : {}) }
-      const text = textFor(conn, privateCard ? initiator.sender : chat)
-      const rendered = typeof body === 'function' ? body(text) : body
-      const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
-      const card = imPlatform(conn.platform)?.richCards === true && typeof runners.get(conn.id)?.handle?.sendCard === 'function' ? structured?.(text) : undefined
-      await markCard(conn.id, cardKey, chat, undefined, rendered, card, undefined, copy)
-      enqueue(conn, addressKey(chat), { chat, target, output, text: rendered, buttons: renderedButtons, card, ...copy, after: async (sent) => {
-        await markCard(conn.id, cardKey, chat, sent?.messageId, rendered, card, sent?.cardFormat, { ...copy, ...(sent?.ephemeralMessageId === undefined ? {} : { ephemeralMessageId: sent.ephemeralMessageId, ephemeralMessageIds: sent.ephemeralMessageIds }) })
-        await settledEdits(conn)
-      } })
-    }
-  }
-
-  const expirePrivateCards = async (conn) => {
-    const runner = runners.get(conn.id)
-    const data = runtimes.get(conn.id)?.data
-    if (runner === undefined || data === undefined || rt.readOnly() !== undefined) return
-    runner.privateQueued ??= new WeakSet()
-    for (const entries of Object.values(data.cards)) {
-      for (const entry of entries) {
-        if (entry.receiverUserId === undefined || entry.deleted) continue
-        const chat = conn.chats?.[entry.chatKey]
-        if (chat === undefined) continue
-        const address = { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
-        let publicCopy = entries.find(copy => copy.chatKey === entry.chatKey && copy.threadId === entry.threadId && copy.receiverUserId === undefined)
-        if (entry.answer === undefined && Date.now() >= entry.privateUntil && publicCopy === undefined) {
-          publicCopy = { chatKey: entry.chatKey, text: entry.text, card: structuredClone(entry.card), threadId: entry.threadId, target: entry.target }
-          entries.push(publicCopy)
-          scheduleWrite(conn.id)
-        }
-        if (publicCopy !== undefined && publicCopy.messageId === undefined && !runner.privateQueued.has(publicCopy)) {
-          runner.privateQueued.add(publicCopy)
-          const copy = publicCopy
-          enqueue(conn, addressKey(address), { chat: address, card: copy.card, after: async sent => {
-            copy.messageId = sent?.messageId
-            copy.cardFormat = sent?.cardFormat
-            runner.privateQueued.delete(copy)
-            scheduleWrite(conn.id)
-            await settledEdits(conn)
-          } })
-          scheduleWrite(conn.id)
-        }
-        if (publicCopy?.messageId !== undefined && entry.ephemeralMessageId !== undefined) {
-          await runner.handle.deletePrivateCard(address, entry)
-          entry.deleted = true
-          entry.edited = true
-          scheduleWrite(conn.id)
-        }
-      }
-    }
-  }
-
   const diffCards = async () => {
     if (rt.readOnly() !== undefined) return
     for (const conn of Object.values(connections())) {
       const runner = runners.get(conn.id)
       if (runner === undefined) continue
-      const data = await cardsOf(conn.id)
+      await cards.load(conn.id)
       // Questions: one card per open question id, sent to the Bot's chats.
       for (const [sessionId, question] of Object.entries(state.questions ?? {})) {
         const cardKey = `q:${question.id}`
-        if (data.cards[cardKey] !== undefined) continue
+        if (cards.sent(conn.id, cardKey)) continue
         const botId = rt.chatOwners.get(sessionId) ?? rt.pastOwners.get(sessionId)?.botId
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
-        await sendCard(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => cardText.question(bot.name, question, text), buttons,
+        await cards.send(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => cardText.question(bot.name, question, text), buttons,
           text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
       }
       // Secret requests: text only — the key is typed on the computer or phone.
@@ -1008,96 +901,36 @@ export function install(rt) {
         if (bot === undefined) continue
         for (const request of list) {
           const cardKey = `s:${request.id}`
-          if (request.status !== 'pending' || data.cards[cardKey] !== undefined) continue
-          await sendCard(conn, cardKey, place.places(conn, { botId }, request.sessionId, 'card'), text => text('secretAsk', { bot: bot.name, name: request.name }))
+          if (request.status !== 'pending' || cards.sent(conn.id, cardKey)) continue
+          await cards.send(conn, cardKey, place.places(conn, { botId }, request.sessionId, 'card'), text => text('secretAsk', { bot: bot.name, name: request.name }))
         }
       }
       // Views awaiting a reply: text form only.
       for (const [sessionId, view] of Object.entries(state.views ?? {})) {
         const cardKey = `v:${view.id}`
-        if (data.cards[cardKey] !== undefined) continue
+        if (cards.sent(conn.id, cardKey)) continue
         const botId = rt.chatOwners.get(sessionId)
         const bot = rt.botOf(botId)
         if (bot === undefined) continue
         const form = viewCardText({ title: view.title, view: view.view })
-        await sendCard(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
+        await cards.send(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
       }
     }
   }
 
-  // Buttons drop and the answer shows wherever the card was settled.
-  const settledEdits = async (conn) => {
-    const runner = runners.get(conn.id)
-    const data = runtimes.get(conn.id)?.data
-    if (runner?.handle.edit === undefined || data === undefined) return
-    for (const entries of Object.values(data.cards)) {
-      for (const entry of entries) {
-        if (entry.deleted || entry.answer === undefined || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || entry.edited === true) continue
-        const chat = conn.chats?.[entry.chatKey]
-        if (chat === undefined) continue
-        const text = textFor(conn, chat)
-        entry.edited = true
-        const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${text('answered')})`
-        const address = { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
-        const editing = entry.receiverUserId !== undefined && typeof runner.handle.editPrivateCard === 'function'
-          ? runner.handle.editPrivateCard(address, entry, entry.card)
-          : entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof runner.handle.editCard === 'function'
-            ? runner.handle.editCard(address, entry.messageId, entry.card, entry.cardFormat)
-            : runner.handle.edit(address, entry.messageId, { text: body })
-        await editing.catch(error => {
-          entry.edited = false
-          if (!error?.stopped) rt.warn('ds-bot: im settled card edit failed: %s', error)
-        })
-        scheduleWrite(conn.id)
-      }
-    }
-  }
-  // A card answered on the computer leaves the state; its IM copy settles too.
-  const settleGone = async () => {
-    for (const conn of Object.values(connections())) {
-      const data = runtimes.get(conn.id)?.data
-      if (data === undefined) continue
-      let touched = false
-      const openIds = new Set(Object.values(state.questions ?? {}).map(question => `q:${question.id}`))
-      const openSecret = new Set(Object.values(state.secretRequests ?? {}).flat().filter(entry => entry.status === 'pending').map(entry => `s:${entry.id}`))
-      const openViews = new Set(Object.values(state.views ?? {}).map(view => `v:${view.id}`))
-      const openCard = cardKey => cardKey.startsWith('q:') ? openIds.has(cardKey)
-        : cardKey.startsWith('a:') ? rt.approvalsView().some(entry => `a:${entry.id}` === cardKey)
-          : cardKey.startsWith('s:') ? openSecret.has(cardKey)
-            : cardKey.startsWith('v:') ? openViews.has(cardKey)
-              : cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
-                ? data.cards[cardKey].some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
-                  && statusData(rt, entry.target, textFor(conn, conn.chats?.[entry.chatKey]), statusSteps).active)
-                : false
-      for (const [cardKey, entries] of Object.entries(data.cards)) {
-        if (openCard(cardKey)) continue
-        for (const entry of entries) {
-          if (entry.answer === undefined) {
-            entry.answer = textFor(conn, entry.receiverUserId === undefined ? conn.chats?.[entry.chatKey] : entry)('answered')
-            if (entry.card !== undefined) entry.card.settled = { answer: entry.answer, options: [] }
-            touched = true
-          }
-        }
-      }
-      if (touched) {
-        scheduleWrite(conn.id)
-        await settledEdits(conn)
-      }
-      // A card whose source is gone stays only until its copies are settled and
-      // edited where the platform can edit; keeping it forever grows the file.
-      const editable = runners.get(conn.id)?.handle?.edit !== undefined
-      let pruned = false
-      for (const [cardKey, entries] of Object.entries(data.cards)) {
-        if (openCard(cardKey)) continue
-        const droppable = entries.length === 0 || entries.every(entry => entry.answer !== undefined
-          && (entry.edited === true || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || !editable || conn.chats?.[entry.chatKey] === undefined))
-        if (droppable) {
-          delete data.cards[cardKey]
-          pruned = true
-        }
-      }
-      if (pruned) scheduleWrite(conn.id)
-    }
+  // Whether the thing a Card asks about still waits for an answer.
+  const sourceOpen = (conn) => {
+    const openIds = new Set(Object.values(state.questions ?? {}).map(question => `q:${question.id}`))
+    const openSecret = new Set(Object.values(state.secretRequests ?? {}).flat().filter(entry => entry.status === 'pending').map(entry => `s:${entry.id}`))
+    const openViews = new Set(Object.values(state.views ?? {}).map(view => `v:${view.id}`))
+    return (cardKey, entries) => cardKey.startsWith('q:') ? openIds.has(cardKey)
+      : cardKey.startsWith('a:') ? rt.approvalsView().some(entry => `a:${entry.id}` === cardKey)
+        : cardKey.startsWith('s:') ? openSecret.has(cardKey)
+          : cardKey.startsWith('v:') ? openViews.has(cardKey)
+            : cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
+              ? entries.some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
+                && statusData(rt, entry.target, textFor(conn, conn.chats?.[entry.chatKey]), statusSteps).active)
+              : false
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -1209,7 +1042,7 @@ export function install(rt) {
       if (platform?.privateCards === true && typeof handle.deletePrivateCard === 'function') {
         runner.privateTimer = setInterval(() => {
           const current = fresh(conn.id)
-          if (current !== undefined) void expirePrivateCards(current).catch(error => rt.warn('ds-bot: Private card fallback failed: %s', error))
+          if (current !== undefined) void cards.expirePrivate(current).catch(error => rt.warn('ds-bot: Private card fallback failed: %s', error))
         }, 1000)
         runner.privateTimer.unref?.()
       }
@@ -1590,7 +1423,7 @@ export function install(rt) {
           const targets = place.places(conn, data.roomId === undefined ? { botId: data.botId } : { roomId: data.roomId }, data.sessionId, 'card')
           const buttons = imPlatform(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
           const initiator = await place.initiatorOf(conn, data.sessionId)
-          await sendCard(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
+          await cards.send(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
             text => ({
               text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),
               details: data.detail,
@@ -1602,14 +1435,13 @@ export function install(rt) {
     }
     void (async () => {
       for (const conn of Object.values(connections())) {
-        await settleCard(conn.id, `a:${data.id}`, text => data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
-        await settledEdits(conn)
+        await cards.settle(conn, `a:${data.id}`, text => data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
       }
     })().catch(() => {})
   })
 
   rt.onSaved(() => {
-    void diffCards().then(settleGone).catch(() => {})
+    void diffCards().then(cards.settleGone).catch(() => {})
     void sync().catch(() => {})
   })
 
@@ -1637,8 +1469,7 @@ export function install(rt) {
     const labels = question.multiSelect === true ? [...new Set(selected)] : selected.slice(0, 1)
     for (const conn of Object.values(connections())) {
       if (imPlatform(conn.platform)?.richCards !== true) continue
-      await settleCard(conn.id, `q:${question.id}`, labels.length ? labels.join(', ') : text => text('answered'), labels)
-      await settledEdits(conn)
+      await cards.settle(conn, `q:${question.id}`, labels.length ? labels.join(', ') : text => text('answered'), labels)
     }
   }
 
