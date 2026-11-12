@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 import { adapters } from '../src/host/im/platforms/index.js'
+import { imPlatform } from '../src/shared/im-platforms.js'
 
 // A platform adapter that records sends/edits and lets the test feed inbound
 // messages, actions and statuses. `fail` makes send throw once per call queued.
@@ -19,6 +20,7 @@ const fakeAdapter = ({ buttons = true } = {}) => {
   const typed = []
   const adapter = {
     id: 'fake',
+    capabilities: { edit: true, typing: true, drafts: false, statusPanel: false, forumAdmin: false },
     sent,
     edited,
     typed,
@@ -32,7 +34,7 @@ const fakeAdapter = ({ buttons = true } = {}) => {
       adapter.env = env
       adapter.connects = (adapter.connects ?? 0) + 1
       handlers.onStatus({ state: 'ready', account: { id: 'bot1', name: '@fakebot' } })
-      return {
+      const handle = {
         send: async (chat, body) => {
           sent.push({ chat, ...body })
           const next = fails.shift()
@@ -40,9 +42,15 @@ const fakeAdapter = ({ buttons = true } = {}) => {
           return { messageId: sent.length }
         },
         edit: async (chat, messageId, body) => { edited.push({ chat, messageId, ...body }) },
+        sendCard: (chat, card) => handle.send(chat, { text: [card.text, card.details?.text, card.details?.code].filter(Boolean).join('\n'), buttons: card.options }),
+        editCard: (chat, messageId, card) => handle.edit(chat, messageId, { text: [card.text, card.settled?.answer].filter(Boolean).join('\n— '), buttons: card.settled?.options ?? card.options }),
+        sendPrivateCard: async (chat, _userId, card) => ({ ephemeralMessageId: (await handle.sendCard(chat, card)).messageId }),
+        editPrivateCard: (chat, copy, card) => handle.editCard(chat, copy.ephemeralMessageId, card),
+        deletePrivateCard: async (chat, copy) => { edited.push({ chat, ephemeralMessageId: copy.ephemeralMessageId, deleted: true }) },
         typing: async (chat) => { typed.push(chat) },
         stop: () => { adapter.stopped = (adapter.stopped ?? 0) + 1 },
       }
+      return handle
     },
   }
   adapter.fails = fails
@@ -96,6 +104,9 @@ async function start({ platform = 'telegram', adapter, seed } = {}) {
   const fake = adapter ?? fakeAdapter()
   const real = adapters[platform]
   adapters[platform] = fake
+  const declaration = imPlatform(platform)
+  const capabilities = Object.fromEntries(Object.keys(fake.capabilities).map(key => [key, declaration[key]]))
+  Object.assign(declaration, fake.capabilities)
   const rt = createRuntime(ctx, { home })
   const emitEvent = (sessionId, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
@@ -107,6 +118,7 @@ async function start({ platform = 'telegram', adapter, seed } = {}) {
   const stop = async () => {
     adapters[platform] = real
     await ctx.dispose()
+    Object.assign(declaration, capabilities)
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
   const flush = async () => { await delay(10) }

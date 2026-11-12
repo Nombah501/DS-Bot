@@ -25477,6 +25477,11 @@ var IM_PLATFORMS = [
     fields: [{ key: "token", label: "Bot token", secret: true }],
     buttons: true,
     groups: true,
+    edit: true,
+    typing: true,
+    forumAdmin: true,
+    personLanguage: true,
+    callbackAnswer: true,
     richMessages: true,
     richCards: true,
     drafts: true,
@@ -25491,7 +25496,8 @@ var IM_PLATFORMS = [
     fields: [],
     buttons: false,
     groups: false,
-    login: "qr"
+    login: "qr",
+    typing: true
   },
   {
     id: "feishu",
@@ -25502,7 +25508,8 @@ var IM_PLATFORMS = [
       { key: "appSecret", label: "App Secret", secret: true }
     ],
     buttons: true,
-    groups: true
+    groups: true,
+    edit: true
   },
   {
     id: "dingtalk",
@@ -25539,7 +25546,9 @@ var IM_PLATFORMS = [
     name: "Discord",
     fields: [{ key: "token", label: "Bot token", secret: true }],
     buttons: true,
-    groups: true
+    groups: true,
+    edit: true,
+    typing: true
   },
   {
     id: "slack",
@@ -25549,7 +25558,8 @@ var IM_PLATFORMS = [
       { key: "botToken", label: "Bot Token", secret: true, hint: "xoxb-" }
     ],
     buttons: true,
-    groups: true
+    groups: true,
+    edit: true
   }
 ];
 var imPlatform = (id) => IM_PLATFORMS.find((platform) => platform.id === id);

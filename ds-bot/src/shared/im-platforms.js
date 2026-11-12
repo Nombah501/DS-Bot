@@ -3,6 +3,11 @@
 // `buttons`: the platform can show card buttons (others answer with numbers).
 // `groups`: the IM bot can be @-mentioned in platform group chats.
 // `login: 'qr'`: the connection starts by scanning a code instead of filling fields.
+// Method capabilities are checked against every adapter by im-platforms.test.js.
+// `edit`/`typing`: update sent text / signal work in progress.
+// `richCards`: send and edit structured Cards; `privateCards`: send, edit and delete initiator-only copies.
+// `topics`: create, rename and close Topics; `forumAdmin`: check a person's forum rights.
+// `personLanguage`: retain sender language and support /lang; `callbackAnswer`: answer a button press.
 export const IM_PLATFORMS = [
   {
     id: 'telegram',
@@ -10,6 +15,11 @@ export const IM_PLATFORMS = [
     fields: [{ key: 'token', label: 'Bot token', secret: true }],
     buttons: true,
     groups: true,
+    edit: true,
+    typing: true,
+    forumAdmin: true,
+    personLanguage: true,
+    callbackAnswer: true,
     richMessages: true,
     richCards: true,
     drafts: true,
@@ -25,6 +35,7 @@ export const IM_PLATFORMS = [
     buttons: false,
     groups: false,
     login: 'qr',
+    typing: true,
   },
   {
     id: 'feishu',
@@ -36,6 +47,7 @@ export const IM_PLATFORMS = [
     ],
     buttons: true,
     groups: true,
+    edit: true,
   },
   {
     id: 'dingtalk',
@@ -73,6 +85,8 @@ export const IM_PLATFORMS = [
     fields: [{ key: 'token', label: 'Bot token', secret: true }],
     buttons: true,
     groups: true,
+    edit: true,
+    typing: true,
   },
   {
     id: 'slack',
@@ -83,6 +97,7 @@ export const IM_PLATFORMS = [
     ],
     buttons: true,
     groups: true,
+    edit: true,
   },
 ]
 

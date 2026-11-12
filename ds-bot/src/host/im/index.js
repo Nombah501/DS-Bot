@@ -33,7 +33,7 @@ export function install(rt) {
   // Telegram notices follow one Paired person: their /lang choice, else their
   // Telegram language. Other platforms, and unknown people, use DS Bot's language.
   const translator = (conn, who) => (key, values) => {
-    if (conn.platform !== 'telegram') return translate(localeOf({ uiLanguage: rt.uiLanguage?.() }), key, values)
+    if (imPlatform(conn.platform)?.personLanguage !== true) return translate(localeOf({ uiLanguage: rt.uiLanguage?.() }), key, values)
     const { personId, languageCode } = who()
     const preference = conn.paired?.find(person => person.id === personId)?.language
     return translate(localeOf({ preference, languageCode, uiLanguage: rt.uiLanguage?.() }), key, values)
@@ -47,7 +47,7 @@ export function install(rt) {
   })
   // The single writer of who last spoke in a saved chat and in which language.
   const heard = async (conn, chat, sender) => {
-    if (conn.platform !== 'telegram' || chat === undefined || (chat.languageCode === sender.languageCode && chat.lastSenderId === sender.id)) return
+    if (imPlatform(conn.platform)?.personLanguage !== true || chat === undefined || (chat.languageCode === sender.languageCode && chat.lastSenderId === sender.id)) return
     chat.languageCode = sender.languageCode
     chat.lastSenderId = sender.id
     await rt.save()
@@ -240,7 +240,7 @@ export function install(rt) {
         }
         const sent = job.receiverUserId !== undefined
           ? await runner.handle.sendPrivateCard(job.chat, job.receiverUserId, job.card)
-          : job.card !== undefined && typeof runner.handle.sendCard === 'function'
+          : job.card !== undefined && imPlatform(conn.platform)?.richCards === true
             ? await runner.handle.sendCard(job.chat, job.card)
             : await runner.handle.send(job.chat, job)
         await job.after?.(sent)
@@ -275,7 +275,7 @@ export function install(rt) {
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
   const requested = (conn, msg) => {
     if ((conn.requests ?? []).some(entry => entry.id === msg.sender.id)) return false
-    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, ...(conn.platform === 'telegram' ? { languageCode: msg.sender.languageCode } : {}), at: Date.now() }]
+    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, ...(imPlatform(conn.platform)?.personLanguage === true ? { languageCode: msg.sender.languageCode } : {}), at: Date.now() }]
     return true
   }
 
@@ -368,7 +368,8 @@ export function install(rt) {
     return true
   }
   const sendCardReply = async (conn, chat, body, action) => {
-    if (conn.platform === 'telegram' && typeof action?.answer === 'function') return action.answer(body)
+    // Message replies have no action; even on callback-capable platforms this is optional.
+    if (imPlatform(conn.platform)?.callbackAnswer === true && typeof action?.answer === 'function') return action.answer(body)
     return sendText(conn, chat, body)
   }
 
@@ -405,7 +406,7 @@ export function install(rt) {
       await rt.save()
     }
     await heard(conn, chat, msg.sender)
-    if (conn.platform === 'telegram' && /^\/lang(?:@\S+)?(?:\s|$)/.test(body)) {
+    if (imPlatform(conn.platform)?.personLanguage === true && /^\/lang(?:@\S+)?(?:\s|$)/.test(body)) {
       const person = conn.paired.find(person => person.id === msg.sender.id)
       const language = body.split(/\s+/).slice(1).join(' ')
       if (['ru', 'en', 'auto'].includes(language)) {
@@ -442,7 +443,7 @@ export function install(rt) {
           chat: msg.chat, target, text, steps: statusSteps,
           panels: runner?.panels,
           richCards: imPlatform(conn.platform)?.richCards === true,
-          sendCard: typeof runner?.handle?.sendCard === 'function' ? (...args) => cards.send(conn, ...args) : undefined,
+          sendCard: runner?.handle !== undefined && imPlatform(conn.platform)?.richCards === true ? (...args) => cards.send(conn, ...args) : undefined,
           sendText: body => sendTo(conn, msg.chat.key, msg.chat, body, undefined, undefined, true),
         })
       }
@@ -564,7 +565,7 @@ export function install(rt) {
       const held = cards.open(conn, chat, key)
       const found = questionById(cardKey.slice(2))
       const handle = runners.get(conn.id)?.handle
-      if (found?.question.multiSelect !== true || held?.entry.card === undefined || typeof handle?.editCard !== 'function') {
+      if (found?.question.multiSelect !== true || held?.entry.card === undefined || handle === undefined) {
         await sendCardReply(conn, chat, text('stale'), action)
         return
       }
@@ -701,10 +702,6 @@ export function install(rt) {
     const adapter = adapters[conn.platform]
     if (adapter === undefined || runners.has(conn.id)) return
     const platform = imPlatform(conn.platform)
-    if (platform?.ws === true && globalThis.WebSocket === undefined) {
-      setStatus(conn.id, { state: 'error', error: 'This dsh runs on a Node without WebSocket', at: Date.now() })
-      return
-    }
     // The slot is reserved before the async work: a concurrent sync cannot
     // start a second adapter for the same connection.
     const runner = { handle: undefined, queues: new Map(), typing: undefined, drafts: undefined }
@@ -738,7 +735,7 @@ export function install(rt) {
         return
       }
       runner.handle = handle
-      if (typeof handle.draft === 'function') {
+      if (platform?.drafts === true) {
         runner.drafts = draftStream({
           connOf: () => fresh(conn.id) ?? conn,
           place,
@@ -747,7 +744,7 @@ export function install(rt) {
           warn: message => rt.warn('ds-bot: im draft failed: %s', rt.redactSecrets(message)),
         })
       }
-      if (platform?.statusPanel === true && typeof handle.sendStatusPanel === 'function' && typeof handle.editStatusPanel === 'function') {
+      if (platform?.statusPanel === true) {
         runner.panels = statusPanels(handle, {
           rt, steps: statusSteps,
           records: (await runtimeOf(conn.id)).data.panels,
@@ -765,7 +762,7 @@ export function install(rt) {
       if (platform?.topics === true) {
         for (const chatKey of Object.keys(conn.chats ?? {})) await ensurePrivateTopics(conn, chatKey)
       }
-      if (typeof runner.handle?.typing === 'function') {
+      if (platform?.typing === true) {
         runner.typing = setInterval(() => {
           const current = fresh(conn.id) ?? conn
           const owners = [...Object.keys(state.bots).map(botId => ({ botId })), ...Object.keys(state.rooms).map(roomId => ({ roomId }))]
@@ -779,7 +776,7 @@ export function install(rt) {
         }, TYPING_MS)
         runner.typing.unref?.()
       }
-      if (platform?.privateCards === true && typeof handle.deletePrivateCard === 'function') {
+      if (platform?.privateCards === true) {
         runner.privateTimer = setInterval(() => {
           const current = fresh(conn.id)
           if (current !== undefined) void cards.expirePrivate(current).catch(error => rt.warn('ds-bot: Private card fallback failed: %s', error))
@@ -974,7 +971,7 @@ export function install(rt) {
         conn.paired = [...(conn.paired ?? []), { id: request.id, name: request.name, at: Date.now(), ...(access === undefined ? {} : { access }) }]
         conn.chats ??= {}
         conn.chats[request.chatKey] ??= { kind: request.chatKind, title: request.name, at: Date.now() }
-        if (conn.platform === 'telegram') {
+        if (imPlatform(conn.platform)?.personLanguage === true) {
           conn.chats[request.chatKey].languageCode = request.languageCode
           if (request.chatKind === 'direct') conn.chats[request.chatKey].personId = request.id
         }
@@ -1039,7 +1036,7 @@ export function install(rt) {
     async 'im-login-start'(body) {
       const platform = imPlatform(String(body.platform ?? ''))
       const adapter = platform === undefined ? undefined : adapters[platform.id]
-      if (platform === undefined || typeof adapter?.loginStart !== 'function') throw new Error('This platform has no QR login')
+      if (platform?.login !== 'qr' || adapter === undefined) throw new Error('This platform has no QR login')
       const bot = rt.botOf(String(body.botId ?? ''))
       if (bot === undefined) throw new Error('Choose a Bot first')
       const env = await envFor({ id: 'im_login', platform: platform.id, settings: {}, secrets: {} }, { get: () => ({}), set: () => {} })
@@ -1049,7 +1046,7 @@ export function install(rt) {
     async 'im-login-wait'(body) {
       const platform = imPlatform(String(body.platform ?? 'weixin'))
       const adapter = platform === undefined ? undefined : adapters[platform.id]
-      if (platform === undefined || typeof adapter?.loginWait !== 'function') throw new Error('This platform has no QR login')
+      if (platform?.login !== 'qr' || adapter === undefined) throw new Error('This platform has no QR login')
       const bot = rt.botOf(String(body.botId ?? ''))
       if (bot === undefined) throw new Error('Choose a Bot first')
       const env = await envFor({ id: 'im_login', platform: platform.id, settings: {}, secrets: {} }, { get: () => ({}), set: () => {} })
