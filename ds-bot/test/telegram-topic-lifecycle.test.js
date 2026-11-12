@@ -69,6 +69,7 @@ test('S1: a newly created Bot gets a Topic automatically for all-access people',
   await s.rt.createBot({ name: 'Tester', pickModel: true })
   const created = await s.request('createForumTopic', p => p.name === 'Tester', after)
   assert.equal(created.params.chat_id, '5')
+  await until(() => s.rt.state.im.connections[s.connection.id].chats['5'].topics?.[104])
   s.step('New Bot output', {}, 'c')
   const sent = await s.request('sendRichMessage', p => /New Bot output/.test(p.rich_message.html), after)
   assert.equal(sent.params.message_thread_id, 104)

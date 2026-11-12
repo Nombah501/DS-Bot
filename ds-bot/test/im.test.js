@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import fsp from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -120,6 +122,101 @@ const gm = (s, senderId, text, { mentioned = true, chat = { key: 'g1', kind: 'gr
   chat, sender: { id: senderId, name: `User ${senderId}` }, text, mentioned, ...extra,
 })
 
+
+test('runtime writes serialize scheduled saves, inbound messages and shutdown', async (t) => {
+  const seed = TEAM()
+  seed.im = { connections: { im_write: {
+    id: 'im_write', platform: 'telegram', botId: 'a', settings: {}, secrets: {}, enabled: true,
+    paired: [{ id: 'u1', name: 'U1', at: 1 }], requests: [],
+    chats: { 'dm-u1': { kind: 'direct', title: 'u1', personId: 'u1', lastSenderId: 'u1', at: 1 } }, createdAt: 1,
+  } } }
+  const s = await start({ seed })
+  t.after(s.stop)
+  for (let attempt = 0; s.fake.handlers === null && attempt < 300; attempt++) await s.flush()
+  assert.ok(s.fake.handlers, 'the adapter connected')
+  const dir = join(s.home, 'im')
+  const temp = join(dir, `im_write.${process.pid}.tmp`)
+  const path = join(dir, 'im_write.json')
+  const warnings = []
+  t.mock.method(s.rt, 'warn', (...args) => warnings.push(args))
+  let release
+  let started
+  let blocked = new Promise(resolve => { release = resolve })
+  let writing = new Promise(resolve => { started = resolve })
+  let writes = 0
+  let blockAt = 1
+  let failWrite = false
+  // Keep runtime filesystem work in microtasks so the overlap is deterministic.
+  const syncIO = (name, target, run) => {
+    const original = fsp[name]
+    t.mock.method(fsp, name, async (...args) => args[0] === target ? run(...args) : original(...args))
+  }
+  syncIO('mkdir', dir, mkdirSync)
+  syncIO('chmod', temp, (...args) => {
+    if (failWrite) {
+      failWrite = false
+      throw Object.assign(new Error('runtime disk failure'), { code: 'EIO' })
+    }
+    return chmodSync(...args)
+  })
+  syncIO('rename', temp, renameSync)
+  syncIO('writeFile', temp, async (...args) => {
+    if (++writes === blockAt) {
+      started()
+      await blocked
+    }
+    writeFileSync(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    s.fake.env.runtime.set({ cursor: 'old' })
+    t.mock.timers.tick(400)
+    t.mock.timers.reset()
+    await writing
+    s.fake.env.runtime.set({ cursor: 'latest' })
+    const inbound = dm(s, 'u1', 'Hello')
+    await new Promise(setImmediate)
+    const deliveredWhileWriting = s.prompts.length
+    release()
+    await inbound
+    await new Promise(setImmediate)
+    assert.deepEqual(warnings, [], 'overlapping runtime saves must not fail')
+    const saved = JSON.parse(readFileSync(path, 'utf8'))
+    assert.equal(saved.runtime.cursor, 'latest')
+    assert.equal(deliveredWhileWriting, 0, 'saveNow must finish before the Bot receives the message')
+    assert.equal(Object.keys(saved.requests).length, 1, 'the inbound Origin was persisted')
+    assert.equal(s.prompts.length, 1, 'the message reaches the Bot')
+    assert.equal(statSync(path).mode & 0o777, 0o600)
+    assert.equal(existsSync(temp), false)
+    failWrite = true
+    await dm(s, 'u1', 'Failed write')
+    assert.equal(warnings.length, 1)
+    assert.equal(warnings[0][1].code, 'EIO')
+    assert.equal(existsSync(temp), false, 'a failed write removes its temporary file')
+    assert.equal(s.prompts.length, 1, 'a failed saveNow does not deliver the message')
+    await dm(s, 'u1', 'Recovered write')
+    assert.equal(s.prompts.length, 2, 'a failed write does not poison later saves')
+    assert.equal(warnings.length, 1)
+    blockAt = writes + 1
+    blocked = new Promise(resolve => { release = resolve })
+    writing = new Promise(resolve => { started = resolve })
+    const pending = dm(s, 'u1', 'Before shutdown')
+    await writing
+    s.fake.env.runtime.set({ cursor: 'shutdown' })
+    const shutdown = s.ctx.dispose()
+    await new Promise(setImmediate)
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).runtime.cursor, 'latest')
+    release()
+    await Promise.all([pending, shutdown])
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).runtime.cursor, 'shutdown')
+  } finally {
+    release()
+    t.mock.timers.reset()
+    t.mock.restoreAll()
+    syncBuiltinESMExports()
+  }
+})
 
 test('typing receives the chat key on every platform', async (t) => {
   for (const platform of Object.keys(adapters)) {

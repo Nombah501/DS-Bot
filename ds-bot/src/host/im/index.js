@@ -54,7 +54,7 @@ export function install(rt) {
   }
 
   // ---------------------------------------------------------------- runtime file
-  const runtimes = new Map() // id → { data: {runtime, cards, open}, timer }
+  const runtimes = new Map() // id → { data: {runtime, cards, open}, timer, writing }
   const runtimeOf = async (id) => {
     let held = runtimes.get(id)
     if (held !== undefined) return held
@@ -71,6 +71,7 @@ export function install(rt) {
         panels: Array.isArray(data?.panels) ? data.panels : [],
       },
       timer: undefined,
+      writing: Promise.resolve(),
     }
     runtimes.set(id, held)
     return held
@@ -86,17 +87,22 @@ export function install(rt) {
   }
   const writeRuntime = async (id) => {
     const held = runtimes.get(id)
-    if (held === undefined || rt.readOnly() !== undefined) return
-    await mkdir(imDir, { recursive: true })
-    const temp = join(imDir, `${id}.${process.pid}.tmp`)
-    try {
-      await writeFile(temp, JSON.stringify(held.data), { encoding: 'utf8', mode: 0o600 })
-      await chmod(temp, 0o600)
-      await replaceFile(temp, join(imDir, `${id}.json`))
-    } catch (error) {
-      await rm(temp, { force: true }).catch(() => {})
-      throw error
-    }
+    if (held === undefined) return
+    const run = held.writing.then(async () => {
+      if (rt.readOnly() !== undefined) return
+      await mkdir(imDir, { recursive: true })
+      const temp = join(imDir, `${id}.${process.pid}.tmp`)
+      try {
+        await writeFile(temp, JSON.stringify(held.data), { encoding: 'utf8', mode: 0o600 })
+        await chmod(temp, 0o600)
+        await replaceFile(temp, join(imDir, `${id}.json`))
+      } catch (error) {
+        await rm(temp, { force: true }).catch(() => {})
+        throw error
+      }
+    })
+    held.writing = run.catch(() => {})
+    return run
   }
   const runtimeEnv = async (id) => {
     const held = await runtimeOf(id)
@@ -1195,7 +1201,7 @@ export function install(rt) {
       clearInterval(interval)
       return Promise.all([...runners.keys()].map(stop)).then(async () => {
         for (const held of runtimes.values()) if (held.timer !== undefined) clearTimeout(held.timer)
-        await Promise.all([...runtimes.keys()].map(writeRuntime)).catch(() => {})
+        await Promise.allSettled([...runtimes.keys()].map(writeRuntime))
       })
     }
   }, 'ds-bot: im')
