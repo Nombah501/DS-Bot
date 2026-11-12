@@ -1,0 +1,31 @@
+name: Upstream release watch
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# Serialize all refs so manual test branches cannot race the scheduled run.
+concurrency:
+  group: upstream-release-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: github.repository == 'Nombah501/DS-Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = require('node:fs').readFileSync('.upstream-release', 'utf8')
+            const watchUpstream = require('./scripts/upstream-watch.cjs')
+            await watchUpstream({ github, context, core, marker })

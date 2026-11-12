@@ -47,6 +47,8 @@ scripts/publish-fork.sh
 
 The publisher splits the current committed branch at `ds-bot/`, fetches only the fork's `telegram-bridge`, checks ancestry, then performs an ordinary fast-forward-only push. Divergence stops with an error; merge the fork history, never force-push. It refuses dirty/untracked work and never updates upstream or fork `main`. Pack `ds-bot/ds-bot` with `npm pack` from that gated commit and attach the tarball to the matching fork release. Disable the fork's inherited `release.yml` workflow before publishing: it is upstream's npm/desktop/mobile publication pipeline, not this fork's tarball process. Leave its test workflow enabled.
 
+The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/upstream-watch.yml) checks stable releases daily at 06:23 UTC and on manual dispatch. A [“Sync with upstream vX.Y.Z” issue](https://github.com/Nombah501/DS-Bot/issues?q=is%3Aissue+%22Sync+with+upstream%22), with release notes and a tag comparison, is the signal to follow the sync runbook. Existing open or closed issues suppress duplicates. It needs only the built-in `GITHUB_TOKEN`, never merges or publishes, and never changes `.upstream-release`.
+
 After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.5-tb.1.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
 
 Upstream contributions: [our room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396), [typing PR #1192](https://github.com/Fei2411/DS-Bot/pull/1192), and [our Telegram/Russian proposals in Discussions](https://github.com/Fei2411/DS-Bot/discussions?discussions_q=author%3ANombah501). Discussion acceptance is not implied; fork-only features remain maintained here until upstream adopts them.
@@ -66,6 +68,8 @@ In the published DS-Bot checkout the equivalent command is `git diff --name-stat
 
 <!-- upstream-changes:start -->
 ```text
+M	.github/workflows/test.yml
+A	.github/workflows/upstream-watch.yml
 A	.upstream-release
 A	FORK.md
 M	README.md
@@ -114,5 +118,7 @@ A	ds-bot/test/telegram-rich.test.js
 A	ds-bot/test/telegram-status.test.js
 A	ds-bot/test/telegram-topic-lifecycle.test.js
 A	ds-bot/test/telegram-topics.test.js
+A	ds-bot/test/upstream-watch.test.js
+A	scripts/upstream-watch.cjs
 ```
 <!-- upstream-changes:end -->
