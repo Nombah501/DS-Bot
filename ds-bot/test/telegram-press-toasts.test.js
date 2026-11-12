@@ -26,7 +26,7 @@ test('S1: empty Done answers only its callback with a localized toast', async t 
 
 for (const [language, locale, notice, stale] of [
   ['ru-RU', 'en', 'Выберите хотя бы один вариант.', 'На эту карточку уже ответили.'],
-  ['de', 'en', 'Select at least one option.', 'This card was already answered.'],
+  ['de', 'en', 'Wähle mindestens eine Option.', 'Diese Karte wurde bereits beantwortet.'],
   ['zh-CN', 'zh-CN', '请至少选择一个选项。', '这张卡已经答过了。'],
 ]) {
   test(`S1: callback notices use the pressing person's ${language} locale`, async t => {

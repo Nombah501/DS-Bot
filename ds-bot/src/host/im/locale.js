@@ -1,6 +1,6 @@
-// Bridge notices in each DS Bot interface language. Telegram picks Russian from the
-// sender's language, English or Russian from a Paired person's /lang choice, and
-// otherwise the language DS Bot's interface shows; a missing notice falls back to English.
+// Bridge notices in each DS Bot interface language. A Paired person's /lang choice
+// (English or Russian) wins, then their Telegram language when a locale exists for
+// it, then the language DS Bot's interface shows.
 
 const TABLE = {
   ru: {
@@ -120,16 +120,16 @@ const TABLE = {
     statusSending: '正在停止…',
     statusFailed: '未发送，请重试。',
     stop: '停止',
-    paired: 'Connected — choose a Topic for the Bot or group.',
+    paired: '已连接，请选择对应 Bot 或群组的话题。',
     denied: '此 Bot 或群组不在你的访问列表中。',
     topicDeleted: values => `话题已关闭：${values.name} 已删除。`,
     topicRevoked: values => `话题已关闭：${values.name} 已不在你的访问列表中。`,
-    bindChoose: 'Choose a Bot or group for this Topic.',
-    bindAdmin: 'Telegram administrator rights are required for /bind. Make sure the Bridge bot is a group administrator.',
-    bindForum: 'Use /bind in a forum supergroup Topic.',
-    bindEmpty: 'Your Access list has no Bots or groups to bind.',
-    bindHint: 'This Topic is not bound. A group administrator can choose a Bot or group with /bind.',
-    bindBound: values => `Topic bound to ${values.target}.`,
+    bindChoose: '请为这个话题选择一个 Bot 或群组。',
+    bindAdmin: '使用 /bind 需要 Telegram 管理员权限。请确认 Bridge 机器人是群组管理员。',
+    bindForum: '请在论坛超级群组的话题中使用 /bind。',
+    bindEmpty: '你的访问列表中没有可绑定的 Bot 或群组。',
+    bindHint: '这个话题尚未绑定。群组管理员可以用 /bind 选择一个 Bot 或群组。',
+    bindBound: values => `话题已绑定到 ${values.target}。`,
     privateOnly: '只有发起人可以回答这张卡。',
     done: '完成',
     selectOne: '请至少选择一个选项。',
@@ -154,6 +154,30 @@ const TABLE = {
     numbersMulti: '回覆編號，多選用空格隔開',
     allow: '允許一次',
     reject: '拒絕',
+    working: '進行中',
+    statusPanel: '狀態面板',
+    statusIdle: '閒置',
+    statusWaiting: '等待卡片回覆',
+    statusTool: '工具',
+    statusStep: '步驟',
+    statusElapsed: '本輪用時',
+    statusSending: '正在停止…',
+    statusFailed: '沒送出去，請再試一次。',
+    stop: '停止',
+    paired: '已連線，請選擇對應 Bot 或群組的話題。',
+    denied: '這個 Bot 或群組不在你的存取清單裡。',
+    topicDeleted: values => `話題已關閉：${values.name} 已刪除。`,
+    topicRevoked: values => `話題已關閉：${values.name} 已不在你的存取清單裡。`,
+    bindChoose: '請為這個話題選一個 Bot 或群組。',
+    bindAdmin: '使用 /bind 需要 Telegram 管理員權限。請確認 Bridge 機器人是群組管理員。',
+    bindForum: '請在論壇超級群組的話題裡使用 /bind。',
+    bindEmpty: '你的存取清單裡沒有可綁定的 Bot 或群組。',
+    bindHint: '這個話題還沒綁定。群組管理員可以用 /bind 選一個 Bot 或群組。',
+    bindBound: values => `話題已綁定到 ${values.target}。`,
+    privateOnly: '只有發起人可以回答這張卡。',
+    done: '完成',
+    selectOne: '請至少選一個選項。',
+    language: values => `語言：${values.language}。請選擇：/lang ru、/lang en、/lang auto（跟隨 Telegram）。`,
   },
   ja: {
     requested: 'DS Bot に接続リクエストを送信しました。PC の DS Bot 設定 → IM で許可してください。',
@@ -174,6 +198,30 @@ const TABLE = {
     numbersMulti: '番号をスペース区切りで返信',
     allow: '1回許可',
     reject: '拒否',
+    working: '実行中',
+    statusPanel: 'ステータスパネル',
+    statusIdle: '待機中',
+    statusWaiting: 'カードの回答待ち',
+    statusTool: 'ツール',
+    statusStep: 'ステップ',
+    statusElapsed: 'ターン経過時間',
+    statusSending: '停止しています…',
+    statusFailed: '送信できませんでした。もう一度お試しください。',
+    stop: '停止',
+    paired: '接続しました。Bot またはグループのトピックを選択してください。',
+    denied: 'この Bot またはグループはアクセスリストにありません。',
+    topicDeleted: values => `トピックを閉じました：${values.name} は削除されました。`,
+    topicRevoked: values => `トピックを閉じました：${values.name} はアクセスリストから外れました。`,
+    bindChoose: 'このトピックに紐付ける Bot またはグループを選択してください。',
+    bindAdmin: '/bind には Telegram の管理者権限が必要です。Bridge ボットがグループの管理者か確認してください。',
+    bindForum: '/bind はフォーラム型スーパーグループのトピック内で使用してください。',
+    bindEmpty: 'アクセスリストに紐付けできる Bot やグループがありません。',
+    bindHint: 'このトピックはまだ紐付けられていません。グループの管理者が /bind で Bot またはグループを選択できます。',
+    bindBound: values => `トピックを ${values.target} に紐付けました。`,
+    privateOnly: 'このカードに回答できるのは開始した本人だけです。',
+    done: '完了',
+    selectOne: '少なくとも 1 つ選択してください。',
+    language: values => `言語：${values.language}。選択：/lang ru、/lang en、/lang auto（Telegram の言語）。`,
   },
   ko: {
     requested: 'DS Bot에 연결 요청을 보냈습니다. 컴퓨터의 DS Bot 설정 → IM에서 허용해 주세요.',
@@ -194,6 +242,30 @@ const TABLE = {
     numbersMulti: '공백으로 구분하여 번호로 답장',
     allow: '한 번 허용',
     reject: '거부',
+    working: '작업 중',
+    statusPanel: '상태 패널',
+    statusIdle: '대기 중',
+    statusWaiting: '카드 응답 대기 중',
+    statusTool: '도구',
+    statusStep: '단계',
+    statusElapsed: '턴 경과 시간',
+    statusSending: '중지하는 중…',
+    statusFailed: '보내지 못했습니다. 다시 시도해 주세요.',
+    stop: '중지',
+    paired: '연결되었습니다. Bot이나 그룹의 주제를 선택해 주세요.',
+    denied: '이 Bot이나 그룹은 액세스 목록에 없습니다.',
+    topicDeleted: values => `주제가 닫혔습니다: ${values.name}이(가) 삭제되었습니다.`,
+    topicRevoked: values => `주제가 닫혔습니다: ${values.name}이(가) 더 이상 액세스 목록에 없습니다.`,
+    bindChoose: '이 주제에 연결할 Bot이나 그룹을 선택해 주세요.',
+    bindAdmin: '/bind를 사용하려면 Telegram 관리자 권한이 필요합니다. Bridge 봇이 그룹 관리자인지 확인해 주세요.',
+    bindForum: '/bind는 포럼 슈퍼그룹의 주제 안에서 사용해 주세요.',
+    bindEmpty: '액세스 목록에 연결할 Bot이나 그룹이 없습니다.',
+    bindHint: '이 주제는 아직 연결되지 않았습니다. 그룹 관리자가 /bind로 Bot이나 그룹을 선택할 수 있습니다.',
+    bindBound: values => `주제가 ${values.target}에 연결되었습니다.`,
+    privateOnly: '이 카드는 시작한 사람만 응답할 수 있습니다.',
+    done: '완료',
+    selectOne: '하나 이상 선택해 주세요.',
+    language: values => `언어: ${values.language}. 선택: /lang ru, /lang en, /lang auto (Telegram 언어).`,
   },
   es: {
     requested: 'Se envió una solicitud de conexión a DS Bot; permítela en Ajustes → IM en el ordenador.',
@@ -214,6 +286,30 @@ const TABLE = {
     numbersMulti: 'responde con los números separados por espacios',
     allow: 'Permitir una vez',
     reject: 'Rechazar',
+    working: 'Trabajando',
+    statusPanel: 'Panel de estado',
+    statusIdle: 'Libre',
+    statusWaiting: 'Esperando respuesta a una tarjeta',
+    statusTool: 'Herramienta',
+    statusStep: 'Paso',
+    statusElapsed: 'Tiempo del turno',
+    statusSending: 'Deteniendo…',
+    statusFailed: 'No se envió. Inténtalo de nuevo.',
+    stop: 'Detener',
+    paired: 'Conectado — elige el tema del Bot o del grupo.',
+    denied: 'Este Bot o grupo no está en tu lista de acceso.',
+    topicDeleted: values => `Tema cerrado: ${values.name} fue eliminado.`,
+    topicRevoked: values => `Tema cerrado: ${values.name} ya no está en tu lista de acceso.`,
+    bindChoose: 'Elige un Bot o un grupo para este tema.',
+    bindAdmin: 'Para /bind se necesitan permisos de administrador de Telegram. Asegúrate de que el bot del Bridge sea administrador del grupo.',
+    bindForum: 'Usa /bind en un tema de un supergrupo con temas.',
+    bindEmpty: 'Tu lista de acceso no tiene Bots ni grupos para vincular.',
+    bindHint: 'Este tema no está vinculado. Un administrador del grupo puede elegir un Bot o un grupo con /bind.',
+    bindBound: values => `Tema vinculado a ${values.target}.`,
+    privateOnly: 'Solo quien la inició puede responder esta tarjeta.',
+    done: 'Listo',
+    selectOne: 'Selecciona al menos una opción.',
+    language: values => `Idioma: ${values.language}. Elige: /lang ru, /lang en, /lang auto (idioma de Telegram).`,
   },
   fr: {
     requested: 'Une demande de connexion a été envoyée à DS Bot ; autorisez-la dans Paramètres → IM sur l’ordinateur.',
@@ -234,6 +330,30 @@ const TABLE = {
     numbersMulti: 'répondez avec les numéros séparés par des espaces',
     allow: 'Autoriser une fois',
     reject: 'Refuser',
+    working: 'En cours',
+    statusPanel: 'Panneau d’état',
+    statusIdle: 'Inactif',
+    statusWaiting: 'En attente d’une réponse à une carte',
+    statusTool: 'Outil',
+    statusStep: 'Étape',
+    statusElapsed: 'Durée du tour',
+    statusSending: 'Arrêt en cours…',
+    statusFailed: 'Non envoyé. Réessayez.',
+    stop: 'Arrêter',
+    paired: 'Connecté — choisissez le sujet du Bot ou du groupe.',
+    denied: 'Ce Bot ou ce groupe ne figure pas dans votre liste d’accès.',
+    topicDeleted: values => `Sujet fermé : ${values.name} a été supprimé.`,
+    topicRevoked: values => `Sujet fermé : ${values.name} ne figure plus dans votre liste d’accès.`,
+    bindChoose: 'Choisissez un Bot ou un groupe pour ce sujet.',
+    bindAdmin: '/bind nécessite les droits d’administrateur Telegram. Vérifiez que le bot du Bridge est administrateur du groupe.',
+    bindForum: 'Utilisez /bind dans un sujet d’un supergroupe forum.',
+    bindEmpty: 'Votre liste d’accès ne contient aucun Bot ni groupe à lier.',
+    bindHint: 'Ce sujet n’est pas lié. Un administrateur du groupe peut choisir un Bot ou un groupe avec /bind.',
+    bindBound: values => `Sujet lié à ${values.target}.`,
+    privateOnly: 'Seul l’initiateur peut répondre à cette carte.',
+    done: 'Terminé',
+    selectOne: 'Sélectionnez au moins une option.',
+    language: values => `Langue : ${values.language}. Choisissez : /lang ru, /lang en, /lang auto (langue de Telegram).`,
   },
   de: {
     requested: 'Eine Verbindungsanfrage wurde an DS Bot gesendet; erlaube sie am Computer unter Einstellungen → IM.',
@@ -254,8 +374,35 @@ const TABLE = {
     numbersMulti: 'mit durch Leerzeichen getrennten Nummern antworten',
     allow: 'Einmal erlauben',
     reject: 'Ablehnen',
+    working: 'Arbeitet',
+    statusPanel: 'Statusanzeige',
+    statusIdle: 'Frei',
+    statusWaiting: 'Wartet auf eine Kartenantwort',
+    statusTool: 'Werkzeug',
+    statusStep: 'Schritt',
+    statusElapsed: 'Laufzeit',
+    statusSending: 'Wird gestoppt…',
+    statusFailed: 'Nicht gesendet. Versuche es erneut.',
+    stop: 'Stoppen',
+    paired: 'Verbunden — wähle das Thema des Bots oder der Gruppe.',
+    denied: 'Dieser Bot oder diese Gruppe steht nicht auf deiner Zugriffsliste.',
+    topicDeleted: values => `Thema geschlossen: ${values.name} wurde gelöscht.`,
+    topicRevoked: values => `Thema geschlossen: ${values.name} steht nicht mehr auf deiner Zugriffsliste.`,
+    bindChoose: 'Wähle einen Bot oder eine Gruppe für dieses Thema.',
+    bindAdmin: '/bind erfordert Telegram-Administratorrechte. Stelle sicher, dass der Bridge-Bot Administrator der Gruppe ist.',
+    bindForum: 'Verwende /bind in einem Thema einer Forum-Supergruppe.',
+    bindEmpty: 'Deine Zugriffsliste enthält keine Bots oder Gruppen zum Verknüpfen.',
+    bindHint: 'Dieses Thema ist nicht verknüpft. Ein Gruppenadministrator kann mit /bind einen Bot oder eine Gruppe wählen.',
+    bindBound: values => `Thema mit ${values.target} verknüpft.`,
+    privateOnly: 'Nur der Initiator kann diese Karte beantworten.',
+    done: 'Fertig',
+    selectOne: 'Wähle mindestens eine Option.',
+    language: values => `Sprache: ${values.language}. Wähle: /lang ru, /lang en, /lang auto (Telegram-Sprache).`,
   },
 }
+
+export const LOCALES = Object.keys(TABLE)
+export const NOTICES = Object.keys(TABLE.en)
 
 const interfaceLocale = (uiLanguage) => {
   const label = String(uiLanguage ?? '')
@@ -269,12 +416,17 @@ const interfaceLocale = (uiLanguage) => {
   return 'en'
 }
 
-/** @param {{preference?: string, languageCode?: string, uiLanguage?: string}} who  `preference` is a Paired person's /lang choice */
-export const localeOf = ({ preference, languageCode, uiLanguage }) => {
-  if (preference === 'en') return 'en'
-  const code = preference === 'ru' ? 'ru' : languageCode
-  return String(code ?? '').toLowerCase().startsWith('ru') ? 'ru' : interfaceLocale(uiLanguage)
+// A Telegram language tag (`de`, `pt-br`, `zh-hant`) to its locale, when there is one.
+const telegramLocale = (languageCode) => {
+  const tag = String(languageCode ?? '').toLowerCase()
+  if (/^zh-(hant|tw|hk)\b/.test(tag)) return 'zh-TW'
+  const base = tag.split('-')[0]
+  return Object.hasOwn(TABLE, base) ? base : undefined
 }
+
+/** @param {{preference?: string, languageCode?: string, uiLanguage?: string}} who  `preference` is a Paired person's /lang choice */
+export const localeOf = ({ preference, languageCode, uiLanguage }) =>
+  preference === 'en' || preference === 'ru' ? preference : telegramLocale(languageCode) ?? interfaceLocale(uiLanguage)
 
 export const translate = (locale, key, values = {}) => {
   const entry = (TABLE[locale] ?? TABLE.en)[key] ?? TABLE.en[key]

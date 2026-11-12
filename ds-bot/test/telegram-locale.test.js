@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { startBridge } from './telegram-bridge.js'
 
-for (const [language, greeting] of [['ru', 'Здравствуйте, я Chief.'], ['ru-RU', 'Здравствуйте, я Chief.'], ['de', 'Hello, I am Chief.'], [undefined, 'Hello, I am Chief.']]) {
+for (const [language, greeting] of [['ru', 'Здравствуйте, я Chief.'], ['ru-RU', 'Здравствуйте, я Chief.'], ['de', 'Hallo, ich bin Chief.'], ['zh-hant', '你好，我是 Chief。'], ['pt-br', 'Hello, I am Chief.'], [undefined, 'Hello, I am Chief.']]) {
   test(`S1: Bridge greeting follows Telegram sender language ${language}`, async (t) => {
     const s = await startBridge(t)
     s.message('/start', { from: { id: 9, first_name: 'Ann', language_code: language } })
@@ -10,6 +10,12 @@ for (const [language, greeting] of [['ru', 'Здравствуйте, я Chief.'
     assert.equal(sent.params.chat_id, '5')
   })
 }
+
+test('S1: a German Telegram sender reads Bridge-only notices in German with an English DS Bot', async (t) => {
+  const s = await startBridge(t)
+  s.message('/lang', { from: { id: 9, first_name: 'Ann', language_code: 'de' } })
+  await s.request('sendMessage', p => p.text === 'Sprache: auto. Wähle: /lang ru, /lang en, /lang auto (Telegram-Sprache).')
+})
 
 test('S1: Russian pairing, cards, Stop and callback notices follow the sender', async (t) => {
   const s = await startBridge(t, { pair: false })

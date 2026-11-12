@@ -137,12 +137,13 @@ test('S1: status Stop uses Chinese labels and clears a naturally finished snapsh
   const { s, status, press } = await setup(t)
   s.rt.uiLanguage = () => 'Chinese'
   s.sessionEvent('turn/start', { turn: 1 })
-  const snapshot = await status()
+  // A Telegram language without a Bridge locale falls back to DS Bot's language.
+  const snapshot = await status('pt-br')
   assert.match(snapshot.sent.params.rich_message.html, />停止<\/tg-button>/)
   s.sessionEvent('turn/end', { turn: 1 })
   let stops = 0
   s.rt.stopChat = async () => { stops++; return true }
-  press('finished', snapshot)
+  press('finished', snapshot, { from: { id: 11, language_code: 'pt-br' } })
   await s.request('answerCallbackQuery', p => p.callback_query_id === 'finished' && p.text === '现在没有在做的活。')
   assert.equal(s.calls.some(c => c.method === 'sendMessage' && c.params.text === '现在没有在做的活。'), false)
   assert.equal(stops, 0)
