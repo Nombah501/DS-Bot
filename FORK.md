@@ -47,6 +47,8 @@ scripts/publish-fork.sh
 
 The publisher splits the current committed branch at `ds-bot/`, fetches only the fork's `telegram-bridge`, checks ancestry, then performs an ordinary fast-forward-only push. Divergence stops with an error; merge the fork history, never force-push. It refuses dirty/untracked work and never updates upstream or fork `main`. Pack `ds-bot/ds-bot` with `npm pack` from that gated commit and attach the tarball to the matching fork release. Disable the fork's inherited `release.yml` workflow before publishing: it is upstream's npm/desktop/mobile publication pipeline, not this fork's tarball process. Leave its test workflow enabled.
 
+After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.5-tb.1.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
+
 Upstream contributions: [our room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396), [typing PR #1192](https://github.com/Fei2411/DS-Bot/pull/1192), and [our Telegram/Russian proposals in Discussions](https://github.com/Fei2411/DS-Bot/discussions?discussions_q=author%3ANombah501). Discussion acceptance is not implied; fork-only features remain maintained here until upstream adopts them.
 
 ## Changes from upstream
@@ -90,6 +92,7 @@ A	ds-bot/src/host/im/status-panel.js
 A	ds-bot/src/host/im/topics.js
 M	ds-bot/src/shared/im-platforms.js
 M	ds-bot/test/browser-script-runner.test.js
+M	ds-bot/test/diagnostics.test.js
 A	ds-bot/test/im-origin-settings.test.js
 M	ds-bot/test/im-telegram.test.js
 M	ds-bot/test/im.test.js
