@@ -418,8 +418,9 @@ const interfaceLocale = (uiLanguage) => {
 
 // A Telegram language tag (`de`, `pt-br`, `zh-hant`) to its locale, when there is one.
 const telegramLocale = (languageCode) => {
-  const tag = String(languageCode ?? '').toLowerCase()
+  const tag = String(languageCode ?? '').toLowerCase().replaceAll('_', '-')
   if (/^zh-(hant|tw|hk)\b/.test(tag)) return 'zh-TW'
+  if (tag.startsWith('zh')) return 'zh'
   const base = tag.split('-')[0]
   return Object.hasOwn(TABLE, base) ? base : undefined
 }

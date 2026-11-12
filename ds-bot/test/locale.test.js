@@ -14,8 +14,8 @@ test('Locale: a /lang choice wins, then the Telegram language, then the DS Bot i
 })
 
 test('Locale: Traditional Chinese Telegram tags pick zh-TW, every other Chinese tag zh', () => {
-  for (const code of ['zh-hant', 'zh-TW', 'zh-hk']) assert.equal(localeOf({ languageCode: code }), 'zh-TW', code)
-  for (const code of ['zh', 'zh-hans', 'zh-cn']) assert.equal(localeOf({ languageCode: code }), 'zh', code)
+  for (const code of ['zh-hant', 'zh-TW', 'zh-hk', 'zh_TW']) assert.equal(localeOf({ languageCode: code, uiLanguage: 'German' }), 'zh-TW', code)
+  for (const code of ['zh', 'zh-hans', 'zh-cn', 'zh_CN', 'zho']) assert.equal(localeOf({ languageCode: code, uiLanguage: 'German' }), 'zh', code)
 })
 
 test('Locale: every locale translates every notice', () => {
