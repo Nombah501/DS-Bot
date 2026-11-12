@@ -3,12 +3,12 @@
 // records each turn's Origin and Initiator, because the reply-where-asked rule
 // (a Bot turn answers only at its Origin) is the main input to "where".
 import { imPlatform } from '../../shared/im-platforms.js'
-import { allows, sameTarget } from './topics.js'
+import { addressKey, allows, sameTarget, topicLive } from './topics.js'
 
 const personOf = (conn, id) => conn.paired?.find(person => person.id === id)
 const topicMode = conn => imPlatform(conn?.platform)?.topics === true
 
-export function topicTarget(conn, address) {
+function topicTarget(conn, address) {
   const chat = conn.chats?.[address.key]
   if (chat === undefined) return undefined
   if (chat.kind === 'group' && chat.isForum === true && (address.threadId === undefined || address.threadId === 1)) {
@@ -16,14 +16,6 @@ export function topicTarget(conn, address) {
   }
   if (address.threadId !== undefined) return chat.topics?.[address.threadId]?.target
   return chat.target ?? (chat.kind === 'direct' ? { botId: conn.botId } : undefined)
-}
-
-export function canDeliver(conn, address, target) {
-  if (target === undefined || address.kind !== 'direct') return true
-  if (address.threadId !== undefined && conn.chats?.[address.key]?.topics?.[address.threadId]?.closed) return false
-  const chat = conn.chats?.[address.key]
-  return sameTarget(topicTarget(conn, address), target)
-    && allows(personOf(conn, chat?.personId), target)
 }
 
 /**
@@ -39,12 +31,22 @@ export function placement({ connections, store, botOf, roomOf }) {
   const fresh = conn => connections()[conn.id] ?? conn
 
   const targetIn = (conn, address) => {
-    const target = topicMode(conn) && address.key !== undefined
+    const saved = conn.chats?.[address.key]
+    const target = topicMode(conn)
       ? topicTarget(conn, address)
-      : address.target ?? (address.kind === 'direct' ? { botId: conn.botId } : undefined)
+      : saved?.target ?? ((address.kind ?? saved?.kind) === 'direct' ? { botId: conn.botId } : undefined)
     if (target?.botId !== undefined && botOf(target.botId) !== undefined) return target
     if (target?.roomId !== undefined && roomOf(target.roomId) !== undefined) return target
     return undefined
+  }
+
+  // The address still leads to `target`; a private chat must also still admit its person.
+  const bound = (conn, address, target) => {
+    if (target === undefined) return true
+    if (address.kind !== 'direct') return sameTarget(targetIn(conn, address), target)
+    const chat = conn.chats?.[address.key]
+    if (address.threadId !== undefined && chat?.topics?.[address.threadId]?.closed) return false
+    return sameTarget(topicTarget(conn, address), target) && allows(personOf(conn, chat?.personId), target)
   }
 
   const bindings = (conn) => {
@@ -55,7 +57,7 @@ export function placement({ connections, store, botOf, roomOf }) {
       const person = personOf(conn, chat.personId)
       if (topics && chat.kind === 'direct' && conn.account?.hasTopicsEnabled === true) {
         for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (!topic.closed && topic.replacedBy === undefined && allows(person, topic.target)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+          if (topicLive(topic) && allows(person, topic.target)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
         }
         continue
       }
@@ -63,7 +65,7 @@ export function placement({ connections, store, botOf, roomOf }) {
         const target = topicTarget(conn, chat)
         if (target !== undefined) out.push({ chatKey, chat: { ...chat, threadId: 1 }, target })
         for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (threadId !== '1') out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+          if (threadId !== '1' && topicLive(topic)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
         }
         continue
       }
@@ -71,7 +73,7 @@ export function placement({ connections, store, botOf, roomOf }) {
       if (!topics || chat.kind !== 'direct' || chat.personId === undefined || allows(person, target)) out.push({ chatKey, chat, target })
       if (topics && chat.kind === 'group') {
         for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-          if (!topic.closed && topic.replacedBy === undefined) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
+          if (topicLive(topic)) out.push({ chatKey, chat: { ...chat, threadId: Number(threadId) }, target: topic.target })
         }
       }
     }
@@ -103,7 +105,7 @@ export function placement({ connections, store, botOf, roomOf }) {
       const chat = { ...saved, key: initiator.chatKey, ...(initiator.threadId === undefined ? {} : { threadId: initiator.threadId }) }
       if (saved?.isForum === true && chat.threadId === undefined) chat.threadId = 1
       const topic = saved?.topics?.[chat.threadId ?? (saved?.isForum ? 1 : undefined)]
-      if (saved !== undefined && !topic?.closed && topic?.replacedBy === undefined
+      if (saved !== undefined && topicLive(topic)
         && targetIn(originConn, chat)?.botId === botId
         && allows(personOf(originConn, initiator.sender.id), { botId })) {
         return conn.id === originConn.id ? [{ chatKey: chat.key, chat, target: { botId } }] : []
@@ -113,25 +115,41 @@ export function placement({ connections, store, botOf, roomOf }) {
     return targets.filter(({ chat }) => chat.kind === 'direct' && allows(personOf(conn, chat.personId), { botId }))
   }
 
+  const placesOf = (conn, owner, sessionId, kind) => {
+    const out = owner.roomId === undefined ? botPlaces(conn, owner.botId, sessionId, kind === 'card') : listeners(conn, owner)
+    const output = { owner, sessionId, kind }
+    return (kind === 'draft' ? out.filter(place => place.chat.kind === 'direct') : out).map(place => ({ ...place, output }))
+  }
+
   return {
     /**
      * Addresses on this connection that output of `kind` ('message' | 'draft' |
      * 'card' | 'typing') from a Bot or a DS Bot group chat goes to. A Draft goes to
-     * private chats only; only a Card passes the "only Cards" setting.
+     * private chats only; only a Card passes the "only Cards" setting. Each place
+     * carries its `output`, so a queued place can be rechecked with `deliverable`.
      */
     places(conn, owner, sessionId, kind) {
-      const current = fresh(conn)
-      const out = owner.roomId === undefined ? botPlaces(current, owner.botId, sessionId, kind === 'card') : listeners(current, owner)
-      return kind === 'draft' ? out.filter(place => place.chat.kind === 'direct') : out
+      return placesOf(fresh(conn), owner, sessionId, kind)
     },
     /** The Bot or DS Bot group chat an address leads to, if it still exists. */
     targetOf(conn, address) {
       return targetIn(conn, address)
     },
-    /** Whether an address still takes output meant for `target`. */
-    deliverable(conn, address, target) {
+    /** Whether the Paired person may use a Bot or DS Bot group chat; Access lists exist only with Topics. */
+    may(conn, personId, target) {
+      return !topicMode(conn) || allows(personOf(conn, personId), target)
+    },
+    /**
+     * Whether a queued item may still go to `address`: the address still leads to the
+     * item's `target`, and the `output` of a turn is still among that turn's places.
+     * A place returned by `places` is such an item.
+     */
+    deliverable(conn, address, { target, output } = {}) {
       const current = fresh(conn)
-      return !topicMode(current) || canDeliver(current, address, target)
+      if (!topicMode(current)) return true
+      if (!bound(current, address, target)) return false
+      return output === undefined || placesOf(current, output.owner, output.sessionId, output.kind)
+        .some(place => addressKey(place.chat) === addressKey(address))
     },
     /** Moves a queued address onto the Topic that replaced its own, in place. */
     follow(conn, address) {

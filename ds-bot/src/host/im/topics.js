@@ -2,6 +2,8 @@
 // connection's Default Bot, not a restriction on the team's reachable targets.
 export const addressKey = chat => chat.threadId === undefined ? chat.key : JSON.stringify([chat.key, chat.threadId])
 export const sameTarget = (left, right) => left !== undefined && right !== undefined && left.botId === right.botId && left.roomId === right.roomId
+// A Topic that still carries output: not closed and not replaced by a new thread.
+export const topicLive = topic => !topic?.closed && topic?.replacedBy === undefined
 export const allows = (person, target) => person !== undefined && target !== undefined && (person.access === 'all' || person.access === undefined
   || (target.botId !== undefined ? person.access.botIds?.includes(target.botId) : person.access.roomIds?.includes(target.roomId)))
 
@@ -56,7 +58,7 @@ export function privateTopicCreator(rt, handleOf, textFor) {
       if (chat?.kind !== 'direct' || handle === undefined) return
       const person = conn.paired?.find(person => person.id === chat.personId)
       for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-        if (topic.closed || topic.replacedBy !== undefined) continue
+        if (!topicLive(topic)) continue
         const name = (topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId))?.name
         const address = { key: chatKey, kind: chat.kind, threadId: Number(threadId) }
         const reason = name === undefined ? 'topicDeleted' : !allows(person, topic.target) ? 'topicRevoked' : undefined
@@ -79,7 +81,7 @@ export function privateTopicCreator(rt, handleOf, textFor) {
       }
       if (conn.account?.hasTopicsEnabled !== true || chat.kind !== 'direct' || person === undefined || typeof handle.createTopic !== 'function') return
       for (const target of accessTargets(person, rt.state)) {
-        if (Object.values(chat.topics ?? {}).some(topic => !topic.closed && topic.replacedBy === undefined && sameTarget(topic.target, target))) continue
+        if (Object.values(chat.topics ?? {}).some(topic => topicLive(topic) && sameTarget(topic.target, target))) continue
         const name = (target.botId !== undefined ? rt.botOf(target.botId) : rt.roomOf(target.roomId))?.name
         const topic = await handle.createTopic({ key: chatKey, kind: chat.kind }, name)
         // Pairing/access can change while the network is in flight.

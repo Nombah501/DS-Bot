@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { accessTargets, allows, addressKey } from './topics.js'
+import { accessTargets, addressKey } from './topics.js'
 
 // Bind Cards belong to their requesting person and physical Topic, not the
 // Topic's current target: an unbound/inaccessible Topic must still be bindable.
-export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, textFor }) {
+export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, textFor, may }) {
   const nameOf = target => (target.botId === undefined ? rt.roomOf(target.roomId) : rt.botOf(target.botId))?.name
   const admin = async (conn, chat, sender, action) => {
     const handle = handleOf(conn.id)
@@ -54,13 +54,13 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
         await sendCardReply(conn, action.chat, text('stale'), action)
         return
       }
-      if (!allows(conn.paired?.find(person => person.id === action.sender.id), target)) {
+      if (!may(conn, action.sender.id, target)) {
         await sendCardReply(conn, action.chat, text('denied'), action)
         return
       }
       if (!await admin(conn, action.chat, action.sender, action)) return
       // Recheck after the network boundary; access or the Card may have changed.
-      if (saved.bindCards[key] !== held || held.settled || !allows(conn.paired?.find(person => person.id === action.sender.id), target) || nameOf(target) === undefined) return
+      if (saved.bindCards[key] !== held || held.settled || !may(conn, action.sender.id, target) || nameOf(target) === undefined) return
       held.settled = true
       saved.topics ??= {}
       saved.topics[key] = { target, name: nameOf(target), at: Date.now() }

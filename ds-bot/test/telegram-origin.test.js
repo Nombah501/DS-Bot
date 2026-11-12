@@ -195,3 +195,19 @@ for (const place of ['forum', 'private']) test(`S1: secret and view Cards follow
   }
   assert.equal(s.calls.slice(after).filter(call => call.method === 'sendMessage' && /ORIGIN_KEY|Origin view/.test(call.params.text)).length, 2)
 })
+
+test('S1: a Step message waiting for a retry is dropped once its turn moved to another Origin', async t => {
+  const s = await setup(t)
+  await begin(s, { chat: forum, message_thread_id: 40 })
+  let refused = 0
+  s.replies.sendRichMessage = params => params.rich_message.html.includes('Queued step') && refused++ === 0
+    ? { ok: false, error_code: 429, description: 'Too Many Requests: retry after 0.3', parameters: { retry_after: 0.3 } }
+    : { ok: true, result: { message_id: 900, chat: { id: params.chat_id } } }
+  const after = s.calls.length
+  s.step('Queued step')
+  await s.request('sendRichMessage', p => p.rich_message.html.includes('Queued step'), after)
+  s.sessionEvent('turn/end', { turn: 1 })
+  await begin(s, { message_thread_id: 101 }, 2)
+  await delay(800)
+  assert.deepEqual(outputs(s, after, 'Queued step'), [['-60', 40]], 'only the refused attempt, no retry')
+})
