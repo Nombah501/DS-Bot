@@ -23,6 +23,21 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   // restarted connection has a new handle and queues them again.
   const privateQueued = new WeakMap()
   const editing = new WeakMap()
+  const pendingClaims = new Map()
+  // Disabled connections may load their journal only after the source was answered.
+  const records = (id, data = store.peek(id)) => {
+    const pending = pendingClaims.get(id)
+    if (data !== undefined && pending !== undefined) {
+      pendingClaims.delete(id)
+      const conn = connections()[id]
+      if (conn !== undefined) {
+        for (const [cardKey, request] of pending) {
+          request.rollback = claim(conn, cardKey, request.answer, request.selected, data)
+        }
+      }
+    }
+    return data
+  }
   const addressOf = (conn, entry) => {
     const chat = conn.chats?.[entry.chatKey]
     return chat === undefined ? undefined : { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
@@ -34,7 +49,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     : textForPerson(conn, { id: entry.receiverUserId, languageCode: entry.languageCode ?? conn?.chats?.[entry.chatKey]?.languageCode })
 
   const record = async (id, cardKey, chat, messageId, body, card, cardFormat, copy = {}) => {
-    const data = await store.of(id)
+    const data = records(id, await store.of(id))
     const entries = data.cards[cardKey] ?? []
     const held = entries.find(entry => entry.chatKey === chat.key && entry.threadId === chat.threadId && entry.receiverUserId === copy.receiverUserId)
     if (held !== undefined) {
@@ -51,9 +66,22 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   }
 
   // Sets the answer on every copy without editing: a second press already sees it.
-  const claim = (conn, cardKey, answer, selected) => {
-    const data = store.peek(conn.id)
-    const entries = data?.cards[cardKey]
+  const claim = (conn, cardKey, answer, selected, data = records(conn.id)) => {
+    if (data === undefined) {
+      let pending = pendingClaims.get(conn.id)
+      if (pending === undefined) pendingClaims.set(conn.id, pending = new Map())
+      if (pending.has(cardKey)) return
+      const request = { answer, selected }
+      pending.set(cardKey, request)
+      return async () => {
+        if (pendingClaims.get(conn.id)?.get(cardKey) === request) {
+          pending.delete(cardKey)
+          if (pending.size === 0) pendingClaims.delete(conn.id)
+        }
+        await request.rollback?.()
+      }
+    }
+    const entries = data.cards[cardKey]
     if (entries === undefined) return
     const claimed = []
     for (const entry of entries) {
@@ -84,7 +112,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   // is retried by the next one.
   const edits = async (conn) => {
     const handle = handleOf(conn.id)
-    const data = store.peek(conn.id)
+    const data = records(conn.id)
     if (handle?.edit === undefined || data === undefined) return
     for (const entries of Object.values(data.cards)) {
       for (const entry of entries) {
@@ -111,10 +139,15 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   }
 
   return {
-    // Reads the connection's records in; `sent` then answers without waiting.
-    load: id => store.of(id),
+    // A re-enabled connection must also edit answers claimed while it was off.
+    load: async id => {
+      const data = records(id, await store.of(id))
+      const conn = connections()[id]
+      if (conn !== undefined) await edits(conn)
+      return data
+    },
     // Whether a Card was already sent on this connection, by key.
-    sent: (id, cardKey) => store.peek(id)?.cards[cardKey] !== undefined,
+    sent: (id, cardKey) => records(id)?.cards[cardKey] !== undefined,
 
     // A group Card started by a paired person goes to that person alone first,
     // when the platform can; it is recorded before it is queued, so a Card the
@@ -147,13 +180,13 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     // One copy this chat was sent and has not answered yet. A button names its own
     // Card, so it must never fall through to a newer Card of the same kind.
     open: (conn, chat, cardKey, action) => {
-      const entry = store.peek(conn.id)?.cards[cardKey]?.findLast(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined && !item.deleted
+      const entry = records(conn.id)?.cards[cardKey]?.findLast(item => item.chatKey === chat.key && item.threadId === chat.threadId && item.answer === undefined && !item.deleted
         && (action?.ephemeralMessageId === undefined || (item.ephemeralMessageId === action.ephemeralMessageId && item.receiverUserId === action.receiverUserId)))
       return entry === undefined ? undefined : { cardKey, entry }
     },
     // The chat's newest open copy among the kinds `answerable` admits.
     newest: (conn, chat, answerable) => {
-      const data = store.peek(conn.id)
+      const data = records(conn.id)
       if (data === undefined) return undefined
       for (const [cardKey, entries] of Object.entries(data.cards).reverse()) {
         if (!answerable(cardKey)) continue
@@ -162,7 +195,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
       }
       return undefined
     },
-    byMessage: (conn, chat, cardKey, messageId) => store.peek(conn.id)?.cards[cardKey]?.find(item => item.chatKey === chat.key
+    byMessage: (conn, chat, cardKey, messageId) => records(conn.id)?.cards[cardKey]?.find(item => item.chatKey === chat.key
       && item.threadId === chat.threadId && item.messageId === messageId),
 
     // A copy whose Card changed in place (a multi-select tick) is saved and redrawn.
@@ -175,7 +208,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     // sent the private one is deleted.
     expirePrivate: async (conn) => {
       const handle = handleOf(conn.id)
-      const data = store.peek(conn.id)
+      const data = records(conn.id)
       if (handle === undefined || data === undefined || readOnly()) return
       if (!privateQueued.has(handle)) privateQueued.set(handle, new WeakSet())
       const queued = privateQueued.get(handle)
@@ -216,7 +249,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     // edited where the platform can edit, it is dropped so the file stays small.
     settleGone: async () => {
       for (const conn of Object.values(connections())) {
-        const data = store.peek(conn.id)
+        const data = records(conn.id)
         if (data === undefined) continue
         const open = sourceOpen(conn)
         let touched = false
@@ -230,10 +263,8 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
             }
           }
         }
-        if (touched) {
-          store.save(conn.id)
-          await edits(conn)
-        }
+        if (touched) store.save(conn.id)
+        await edits(conn)
         const editable = handleOf(conn.id)?.edit !== undefined
         let pruned = false
         for (const [cardKey, entries] of Object.entries(data.cards)) {
@@ -251,7 +282,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
 
     // A restored Topic takes the copies not yet sent to the old one.
     moved: async (id, chatKey, oldThreadId, threadId) => {
-      const data = await store.of(id)
+      const data = records(id, await store.of(id))
       for (const entries of Object.values(data.cards)) {
         for (const entry of entries) {
           if (entry.chatKey === chatKey && entry.threadId === oldThreadId && entry.messageId === undefined && entry.ephemeralMessageId === undefined) entry.threadId = threadId

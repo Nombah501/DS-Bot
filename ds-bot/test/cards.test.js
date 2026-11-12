@@ -8,8 +8,9 @@ const ann = { id: '9', languageCode: 'en' }
 
 // A Card journal over one Telegram connection, an in-memory runtime store and a
 // scripted adapter: queued jobs wait in `queue` until `deliver` sends the oldest.
-const bench = ({ conn = telegram(), open = () => false, failEdits = 0 } = {}) => {
+const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded = false, loadGate } = {}) => {
   const data = { cards: {} }
+  let loaded = !unloaded
   const calls = []
   const queue = []
   let nextId = 700
@@ -28,7 +29,7 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0 } = {}) =>
     deletePrivateCard: async (chat, copy) => { calls.push(['deletePrivateCard', chat.key, copy.ephemeralMessageId]) },
   }
   const cards = cardJournal({
-    store: { of: async () => data, peek: () => data, save: () => {} },
+    store: { of: async () => { await loadGate; loaded = true; return data }, peek: () => loaded ? data : undefined, save: () => {} },
     connections: () => ({ [conn.id]: conn }),
     textForChat: () => key => `<${key}>`,
     textForPerson: () => key => `<${key}>`,
@@ -44,7 +45,7 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0 } = {}) =>
     await job.after({ messageId: nextId++, ...sent })
     return job
   }
-  return { conn, data, calls, queue, cards, deliver }
+  return { conn, data, calls, queue, cards, deliver, reveal: () => { loaded = true } }
 }
 const question = { text: 'Pick one', options: [{ label: 'Red', data: 'q:1:0', style: 'success' }, { label: 'Blue', data: 'q:1:1' }] }
 const sendQuestion = (b, chat = forum, initiator) => b.cards.send(b.conn, 'q:1', [{ chat, target: { botId: 'a' } }], 'Pick one', undefined, () => structuredClone(question), initiator)
@@ -163,4 +164,50 @@ test('Card journal: a restored Topic takes only the copies not yet sent', async 
   await b.cards.send(b.conn, 'a:2', [{ chat: forum, target: { botId: 'a' } }], 'Allow?')
   await b.cards.moved('c1', '-60', 40, 41)
   assert.deepEqual([b.data.cards['q:1'][0].threadId, b.data.cards['a:2'][0].threadId], [40, 41])
+})
+
+test('Card journal: an unloaded connection keeps the selected answer before reconciliation', async () => {
+  const gate = Promise.withResolvers()
+  const b = bench({ unloaded: true, loadGate: gate.promise })
+  b.data.cards['q:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, text: question.text, card: structuredClone(question) }]
+  b.cards.claim(b.conn, 'q:1', 'Red', ['Red'])
+  const loading = b.cards.load(b.conn.id)
+  gate.resolve()
+  await loading
+  await b.cards.settleGone()
+  assert.deepEqual(b.calls, [['editCard', '-60', 700, { answer: 'Red', options: [{ label: 'Red', style: 'success' }] }]])
+})
+
+test('Card journal: reconciliation applies a pending localized approval before reading externally loaded records', async () => {
+  const b = bench({ unloaded: true })
+  b.data.cards['a:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, card: { text: 'Allow?', options: [{ label: '<allow>', style: 'success' }] } }]
+  b.cards.claim(b.conn, 'a:1', text => text('allow'))
+  b.cards.claim(b.conn, 'a:1', text => text('reject'))
+  b.reveal()
+  await b.cards.settleGone()
+  assert.deepEqual(b.calls, [['editCard', '-60', 700, { answer: '<allow>', options: [{ label: '<allow>', style: 'success' }] }]])
+})
+
+test('Card journal: a failed delivery removes its pending claim before the records load', async () => {
+  const b = bench({ unloaded: true, open: () => true })
+  b.data.cards['q:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, card: structuredClone(question) }]
+  const rollback = b.cards.claim(b.conn, 'q:1', 'Red', ['Red'])
+  assert.equal(typeof rollback, 'function')
+  await rollback()
+  await b.cards.load(b.conn.id)
+  assert.equal(b.cards.open(b.conn, forum, 'q:1')?.entry.answer, undefined)
+  assert.deepEqual(b.calls, [])
+  await b.cards.settle(b.conn, 'q:1', 'Blue', ['Blue'])
+  assert.deepEqual(b.calls, [['editCard', '-60', 700, { answer: 'Blue', options: [{ label: 'Blue' }] }]])
+})
+
+test('Card journal: a failed pending delivery can reopen its copies after the records load', async () => {
+  const b = bench({ unloaded: true, open: () => true })
+  b.data.cards['q:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, card: structuredClone(question) }]
+  const rollback = b.cards.claim(b.conn, 'q:1', 'Red', ['Red'])
+  await b.cards.load(b.conn.id)
+  assert.equal(b.data.cards['q:1'][0].answer, 'Red')
+  await rollback()
+  assert.equal(b.cards.open(b.conn, forum, 'q:1')?.entry.card.settled, undefined)
+  assert.equal(b.calls.at(-1)[3], undefined)
 })
