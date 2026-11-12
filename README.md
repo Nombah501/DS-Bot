@@ -1,3 +1,7 @@
+> **Telegram Bridge fork** of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot), based on v0.3.5.
+> Adds rich Telegram messages and Cards, Topics, Drafts, Stop, access controls and Russian support.
+> See [FORK.md](FORK.md) for features, installation, upstream tracking and changed-file notices.
+
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg"><img src="docs/images/logo.svg" alt="DS Bot" width="260"></picture></p>
 
 # DS Bot
