@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { addressKey, sameTarget } from './topics.js'
 
 // Conservative local policy, not a documented private-widget API quota.
@@ -22,6 +23,22 @@ export function statusData(rt, target, text, steps) {
   }
 }
 
+export async function showStatus(rt, { chat, target, text, steps, panels, richCards, sendCard, sendText }) {
+  if (panels !== undefined && chat.kind === 'direct') {
+    await panels.show(chat, target, text)
+    return
+  }
+  const data = statusData(rt, target, text, steps)
+  const body = `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`
+  if (chat.kind === 'group' && data.active && richCards && sendCard !== undefined) {
+    const key = `t:${randomUUID()}`
+    await sendCard(key, [{ chat, target }], body, undefined,
+      () => ({ text: body, options: [{ data: `${key}:stop`, label: text('stop') }] }))
+  } else {
+    sendText(body)
+  }
+}
+
 // Original, self-contained TelegramWidget document; native styles follow the chat theme.
 export function statusHtml(text) {
   const labels = JSON.stringify({ stop: text('stop'), sending: text('statusSending'), failed: text('statusFailed') }).replace(/</g, '\\u003c')
@@ -36,11 +53,14 @@ W.onEvent('chatDataChanged',render);render();setInterval(elapsed,1000);W.ready()
 </script></body></html>`
 }
 
-export function statusPanels(handle, { records, snapshot, valid, save, warn, recover, textOf }) {
+export function statusPanels(handle, { rt, steps, records, textForChat, deliverable, save, warn, recover }) {
+  const snapshot = record => statusData(rt, record.target, textForChat(record.chat), steps)
+  const valid = record => deliverable(record.chat, record.target)
+    && (record.target.botId !== undefined ? rt.botOf(record.target.botId) : rt.roomOf(record.target.roomId)) !== undefined
   const inFlight = new Set()
   const last = new Map()
   let stopped = false
-  const send = async (record, text = textOf(record)) => {
+  const send = async (record, text = textForChat(record.chat)) => {
     const data = snapshot(record)
     const content = { html: statusHtml(text), data: JSON.stringify(data), caption: `${text('statusPanel')}: ${data.name} — ${data.state}` }
     let sent

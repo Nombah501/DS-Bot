@@ -16,7 +16,7 @@ import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
-import { statusData, statusPanels } from './status-panel.js'
+import { showStatus, statusData, statusPanels } from './status-panel.js'
 
 const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
@@ -437,23 +437,14 @@ export function install(rt) {
       if (target === undefined) {
         await sendText(conn, msg.chat, text(unboundKey))
       } else {
-        const panels = runners.get(conn.id)?.panels
-        if (panels !== undefined && msg.chat.kind === 'direct') {
-          await panels.show(msg.chat, target, text)
-        } else if (imPlatform(conn.platform)?.statusPanel === true) {
-          const data = statusData(rt, target, text, statusSteps)
-          const body = `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`
-          if (msg.chat.kind === 'group' && data.active && imPlatform(conn.platform)?.richCards === true
-            && typeof runners.get(conn.id)?.handle?.sendCard === 'function') {
-            const key = `t:${randomUUID()}`
-            await cards.send(conn, key, [{ chat: msg.chat, target }], body, undefined,
-              () => ({ text: body, options: [{ data: `${key}:stop`, label: text('stop') }] }))
-          } else {
-            sendTo(conn, msg.chat.key, msg.chat, body, undefined, undefined, true)
-          }
-        } else {
-          sendTo(conn, msg.chat.key, msg.chat, `${targetName(conn, target)} — ${text(busyOf(target) ? 'working' : 'idle')}`, undefined, undefined, true)
-        }
+        const runner = runners.get(conn.id)
+        await showStatus(rt, {
+          chat: msg.chat, target, text, steps: statusSteps,
+          panels: runner?.panels,
+          richCards: imPlatform(conn.platform)?.richCards === true,
+          sendCard: typeof runner?.handle?.sendCard === 'function' ? (...args) => cards.send(conn, ...args) : undefined,
+          sendText: body => sendTo(conn, msg.chat.key, msg.chat, body, undefined, undefined, true),
+        })
       }
       return
     }
@@ -758,16 +749,15 @@ export function install(rt) {
       }
       if (platform?.statusPanel === true && typeof handle.sendStatusPanel === 'function' && typeof handle.editStatusPanel === 'function') {
         runner.panels = statusPanels(handle, {
+          rt, steps: statusSteps,
           records: (await runtimeOf(conn.id)).data.panels,
-          snapshot: record => statusData(rt, record.target, textForChat(fresh(conn.id) ?? conn, record.chat.key), statusSteps),
-          valid: record => {
+          textForChat: chat => textForChat(fresh(conn.id) ?? conn, chat.key),
+          deliverable: (chat, target) => {
             const current = fresh(conn.id)
-            return current !== undefined && place.deliverable(current, record.chat, { target: record.target })
-              && (record.target.botId !== undefined ? rt.botOf(record.target.botId) : rt.roomOf(record.target.roomId)) !== undefined
+            return current !== undefined && place.deliverable(current, chat, { target })
           },
           save: () => scheduleWrite(conn.id),
           recover: chat => recoverTopic(fresh(conn.id) ?? conn, chat),
-          textOf: record => textForChat(fresh(conn.id) ?? conn, record.chat.key),
           warn: error => rt.warn('ds-bot: Status panel update failed: %s', rt.redactSecrets(String(error?.message ?? error))),
         })
       }
