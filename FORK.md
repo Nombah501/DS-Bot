@@ -37,6 +37,8 @@ Base: [upstream v0.3.5](https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.5), 
 
 Development lives in the `ds-bot/` subtree of [DSH-Plugins](https://github.com/Nombah501/DSH-Plugins). Sync upstream into that subtree with full history, preserve Telegram-only capability gates and regenerate generated bundles rather than editing them. Follow the integration repository's `docs/runbooks/sync-upstream.md`. Install plugin/harness dependencies and the new `link/` dependencies before building. Fork versions are `<upstream version>-tb.<N>`: increment N for each publication, reset it for a new upstream base.
 
+Keep `app/package.json` and both root version fields in `app/package-lock.json` in step with `ds-bot/package.json`, including the `-tb.N` suffix. Upstream's Desktop app profile test requires matching app/plugin versions even for plugin-only releases. The integration repository's `scripts/check.sh` checks that invariant without installing the app.
+
 From a clean, committed DSH-Plugins checkout:
 
 ```sh
@@ -73,6 +75,8 @@ A	.github/workflows/upstream-watch.yml
 A	.upstream-release
 A	FORK.md
 M	README.md
+M	app/package-lock.json
+M	app/package.json
 M	ds-bot/client.js
 M	ds-bot/package-lock.json
 M	ds-bot/package.json
