@@ -60,6 +60,24 @@ const nameOf = (from) => {
   return from?.username ? `@${from.username}` : (name || String(from?.id ?? ''))
 }
 
+const chatOf = (raw, { from, threadId, compact = false } = {}) => ({
+  key: String(raw?.id),
+  kind: raw?.type === 'private' ? 'direct' : 'group',
+  ...(compact ? {} : {
+    title: raw?.title ?? nameOf(from),
+    ...(raw?.type === 'supergroup' && raw.is_forum === true ? { isForum: true } : {}),
+  }),
+  ...(threadId === undefined ? {} : { threadId }),
+})
+
+const senderOf = from => ({
+  id: String(from.id ?? ''),
+  name: nameOf(from),
+  ...(from.language_code === undefined ? {} : { languageCode: from.language_code }),
+})
+
+const richUnsupported = error => error.status === 404 || /method (?:not found|unknown)|unknown method/i.test(error.message)
+
 export default {
   id: 'telegram',
 
@@ -162,7 +180,7 @@ export default {
         // Acknowledge before cancellation/network work can consume the 15-second deadline.
         await call('answerWidgetQuery', { widget_query_id: query.id }, { timeout: 10_000 }).catch(error => env.log?.warn?.('ds-bot: widget answer failed: %s', reason(error)))
         await handlers.onWidgetQuery?.({
-          chat: { key: String(query.chat?.id), kind: query.chat?.type === 'private' ? 'direct' : 'group' },
+          chat: chatOf(query.chat, { compact: true }),
           sender: { id: String(query.from?.id ?? ''), languageCode: query.from?.language_code },
           messageId: query.message_id, data: query.data, type: query.type?.type,
         })
@@ -171,7 +189,7 @@ export default {
       if (update.stopped_message_generation !== undefined) {
         const event = update.stopped_message_generation
         await handlers.onStop?.({
-          chat: { key: String(event.chat?.id), kind: event.chat?.type === 'private' ? 'direct' : 'group', ...(event.message_thread_id === undefined ? {} : { threadId: event.message_thread_id }) },
+          chat: chatOf(event.chat, { compact: true, threadId: event.message_thread_id }),
           draftId: event.draft_id,
         })
         return
@@ -179,7 +197,8 @@ export default {
       if (update.message !== undefined) {
         const message = update.message
         const chat = message.chat ?? {}
-        const kind = chat.type === 'private' ? 'direct' : 'group'
+        const parsedChat = chatOf(chat, { from: message.from, threadId: message.message_thread_id })
+        const kind = parsedChat.kind
         const from = message.from ?? {}
         const raw = String(message.text ?? message.caption ?? '')
         const commandBot = /^\/\w+(@\w+)(?:\s|$)/.exec(raw)?.[1]
@@ -192,8 +211,8 @@ export default {
         )
         const { images, files } = await fileBlocks(message)
         await handlers.onMessage({
-          chat: { key: String(chat.id), kind, title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
-          sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
+          chat: parsedChat,
+          sender: senderOf(from),
           text: kind === 'group' ? strip(raw) : raw,
           images,
           files,
@@ -217,8 +236,8 @@ export default {
         const timer = setTimeout(() => { void answer() }, 1000)
         try {
           await handlers.onAction({
-            chat: { key: String(chat.id), kind: chat.type === 'private' ? 'direct' : 'group', title: chat.title ?? nameOf(from), ...(chat.type === 'supergroup' && chat.is_forum === true ? { isForum: true } : {}), ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }) },
-            sender: { id: String(from.id ?? ''), name: nameOf(from), ...(from.language_code === undefined ? {} : { languageCode: from.language_code }) },
+            chat: chatOf(chat, { from, threadId: message.message_thread_id }),
+            sender: senderOf(from),
             data: String(query.data ?? ''),
             messageId: message.message_id,
             callbackQueryId: query.id,
@@ -274,6 +293,18 @@ export default {
     }
     void poll()
 
+    const callHtml = async (method, params, plainText, retryUnchanged = false) => {
+      try {
+        return await call(method, { ...params, parse_mode: 'HTML' })
+      } catch (error) {
+        // Sends skip an identical plain retry; edits still retry it.
+        if ((retryUnchanged || params.text !== plainText) && /can't parse entities|parse entities/i.test(String(error?.message ?? ''))) {
+          return await call(method, { ...params, text: plainText })
+        }
+        throw error
+      }
+    }
+
     const send = async (chat, { text, buttons, rich = false }) => {
       if (rich) {
         let messageId
@@ -284,7 +315,7 @@ export default {
           }
           return { messageId, format: 'rich' }
         } catch (error) {
-          if (error.status !== 404 && !/method (?:not found|unknown)|unknown method/i.test(error.message)) {
+          if (!richUnsupported(error)) {
             env.log?.warn('ds-bot: Telegram rich send failed: %s', reason(error))
             throw error
           }
@@ -296,18 +327,7 @@ export default {
         const markup = index === chunks.length - 1 && buttons?.length > 0
           ? { reply_markup: keyboard(buttons) }
           : {}
-        const sendOne = async (body) => {
-          try {
-            return await call('sendMessage', { chat_id: chat.key, ...thread(chat), text: body, parse_mode: 'HTML', ...markup })
-          } catch (error) {
-            // Telegram rejects entities it cannot parse; the same text goes plain.
-            if (body !== chunk.text && /can't parse entities|parse entities/i.test(String(error?.message ?? ''))) {
-              return await call('sendMessage', { chat_id: chat.key, ...thread(chat), text: chunk.text, ...markup })
-            }
-            throw error
-          }
-        }
-        const sent = await sendOne(chunk.html)
+        const sent = await callHtml('sendMessage', { chat_id: chat.key, ...thread(chat), text: chunk.html, ...markup }, chunk.text)
         messageId = sent?.message_id ?? messageId
       }
       return { messageId }
@@ -343,7 +363,7 @@ export default {
           }
           return { messageId, cardFormat: 'rich' }
         } catch (error) {
-          if (error.status !== 404 && !/method (?:not found|unknown)|unknown method/i.test(error.message)) {
+          if (!richUnsupported(error)) {
             env.log?.warn('ds-bot: Telegram rich card send failed: %s', reason(error))
             throw error
           }
@@ -402,15 +422,8 @@ export default {
           }
           return
         }
-        try {
-          await call('editMessageText', { chat_id: chat.key, message_id: messageId, text: chunkTelegram(text, TEXT_LIMIT)[0]?.html ?? '', parse_mode: 'HTML', ...markup })
-        } catch (error) {
-          if (/can't parse entities|parse entities/i.test(String(error?.message ?? ''))) {
-            await call('editMessageText', { chat_id: chat.key, message_id: messageId, text: chunkTelegram(text, TEXT_LIMIT)[0]?.text ?? '', ...markup })
-            return
-          }
-          throw error
-        }
+        const chunk = chunkTelegram(text, TEXT_LIMIT)[0]
+        await callHtml('editMessageText', { chat_id: chat.key, message_id: messageId, text: chunk?.html ?? '', ...markup }, chunk?.text ?? '', true)
       },
       typing: chat => call('sendChatAction', { chat_id: chat.key, ...thread(chat), action: 'typing' }).catch(() => {}),
       stop: () => {

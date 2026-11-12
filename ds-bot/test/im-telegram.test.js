@@ -324,3 +324,148 @@ test('S2: rich edit format survives reconnect without retaining sent message ide
   assert.equal(edited.params.rich_message.html, '<h1>Restored</h1>')
   assert.equal(edited.params.text, undefined)
 })
+
+test('message and callback parsing preserve chat and sender data shapes', async t => {
+  const api = await fakeApi()
+  api.holdPoll = true
+  const cases = [
+    {
+      rawChat: { id: 5, type: 'private' }, from: { id: 9, username: 'ann', first_name: 'Ann', language_code: 'ru' },
+      chat: { key: '5', kind: 'direct', title: '@ann' }, sender: { id: '9', name: '@ann', languageCode: 'ru' },
+    },
+    {
+      rawChat: { id: -8, type: 'supergroup', title: 'Crew', is_forum: true }, threadId: 17,
+      from: { id: 9, first_name: 'Ann', last_name: 'Lee' },
+      chat: { key: '-8', kind: 'group', title: 'Crew', isForum: true, threadId: 17 }, sender: { id: '9', name: 'Ann Lee' },
+    },
+    {
+      rawChat: { id: -9, type: 'group', title: '', is_forum: true }, threadId: 0, from: { id: 0 },
+      chat: { key: '-9', kind: 'group', title: '', threadId: 0 }, sender: { id: '0', name: '0' },
+    },
+    {
+      rawChat: { id: -10, type: 'supergroup', is_forum: false }, from: { id: 12, first_name: ' Ann ', last_name: 'Lee ' },
+      chat: { key: '-10', kind: 'group', title: 'Ann  Lee' }, sender: { id: '12', name: 'Ann  Lee' },
+    },
+    {
+      chat: { key: 'undefined', kind: 'group', title: '' }, sender: { id: '', name: '' },
+    },
+  ]
+  const messages = []
+  const actions = []
+  for (const [index, data] of cases.entries()) {
+    const message = { message_id: index, chat: data.rawChat, message_thread_id: data.threadId, text: 'hello' }
+    api.updates.push({ update_id: index * 2, message: { ...message, from: data.from } })
+    api.updates.push({ update_id: index * 2 + 1, callback_query: { id: `query-${index}`, from: data.from, data: 'answer', message } })
+  }
+  const handle = telegram.connect({ token: 'TOKEN' }, env(api.api), {
+    onMessage: message => messages.push(message), onAction: action => actions.push(action), onStatus() {},
+  })
+  t.after(() => { handle.stop(); api.close() })
+  await until(() => messages.length === cases.length && actions.length === cases.length)
+  await until(() => api.calls.filter(call => call.method === 'getUpdates').length >= 2)
+  const expected = cases.map(({ chat, sender }) => ({ chat, sender }))
+  for (const events of [messages, actions]) {
+    assert.deepEqual(events.map(({ chat, sender }) => ({ chat, sender })), expected)
+  }
+})
+
+test('widget and Draft Stop parsing retain their smaller chat shapes', async t => {
+  const api = await fakeApi()
+  api.holdPoll = true
+  const widgets = []
+  const stops = []
+  for (const chat of [{ id: 5, type: 'private', title: 'Private' }, { id: -8, type: 'supergroup', title: 'Crew', is_forum: true }]) {
+    api.updates.push({ widget_query: { id: 'widget', chat, from: { id: 9, username: 'ann', language_code: 'ru' }, message_thread_id: 17, message_id: 42, data: 'stop', type: { type: 'button' } } })
+    api.updates.push({ stopped_message_generation: { chat, message_thread_id: 17, draft_id: 3 } })
+  }
+  api.updates.push({ widget_query: { id: 'empty' } })
+  api.updates.push({ stopped_message_generation: { draft_id: 4 } })
+  const handle = telegram.connect({ token: 'TOKEN' }, env(api.api), {
+    onWidgetQuery: event => widgets.push(event), onStop: event => stops.push(event), onStatus() {},
+  })
+  t.after(() => { handle.stop(); api.close() })
+  await until(() => widgets.length === 3 && stops.length === 3)
+  assert.deepEqual(widgets, [
+    { chat: { key: '5', kind: 'direct' }, sender: { id: '9', languageCode: 'ru' }, messageId: 42, data: 'stop', type: 'button' },
+    { chat: { key: '-8', kind: 'group' }, sender: { id: '9', languageCode: 'ru' }, messageId: 42, data: 'stop', type: 'button' },
+    { chat: { key: 'undefined', kind: 'group' }, sender: { id: '', languageCode: undefined }, messageId: undefined, data: undefined, type: undefined },
+  ])
+  assert.deepEqual(stops, [
+    { chat: { key: '5', kind: 'direct', threadId: 17 }, draftId: 3 },
+    { chat: { key: '-8', kind: 'group', threadId: 17 }, draftId: 3 },
+    { chat: { key: 'undefined', kind: 'group' }, draftId: 4 },
+  ])
+})
+
+for (const method of ['send', 'sendCard']) {
+  test(`${method} applies the rich-unsupported rule without masking other errors`, async t => {
+    const api = await fakeApi()
+    api.holdPoll = true
+    const warnings = []
+    const handle = telegram.connect({ token: 'TOKEN' }, { ...env(api.api), log: { warn: (...args) => warnings.push(args) } }, { onStatus() {} })
+    t.after(() => { handle.stop(); api.close() })
+    const chat = { key: '5', threadId: 17 }
+    const buttons = [{ label: 'Choose', data: 'choice' }]
+    const send = () => method === 'send'
+      ? handle.send(chat, { text: '**Body**', rich: true, buttons })
+      : handle.sendCard(chat, { text: '**Body**', options: buttons })
+    api.replies.sendRichMessage = { result: { message_id: 41 } }
+    assert.deepEqual(await send(), method === 'send' ? { messageId: 41, format: 'rich' } : { messageId: 41, cardFormat: 'rich' })
+    for (const [error, description] of [[404, 'Not Found'], [400, 'METHOD NOT FOUND'], [500, 'Unknown method'], [400, 'Method unknown']]) {
+      api.replies.sendRichMessage = { error, description }
+      api.replies.sendMessage = { result: { message_id: 42 } }
+      const after = api.calls.length
+      assert.deepEqual(await send(), method === 'send' ? { messageId: 42 } : { messageId: 42, cardFormat: 'text' })
+      assert.deepEqual(api.calls.slice(after).filter(call => call.method !== 'getUpdates'), [
+        { method: 'sendRichMessage', params: { chat_id: '5', message_thread_id: 17, rich_message: { html: method === 'send' ? '<p><b>Body</b></p>' : '<p><b>Body</b></p>\n<tg-button-row><tg-button type="callback_data" data="choice">Choose</tg-button></tg-button-row>' } } },
+        { method: 'sendMessage', params: { chat_id: '5', message_thread_id: 17, text: '<b>Body</b>', parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: 'Choose', callback_data: 'choice' }]] } } },
+      ])
+    }
+    assert.deepEqual(warnings, [])
+    for (const [error, description] of [[400, "can't parse entities"], [403, 'Forbidden'], [429, 'Too Many Requests'], [500, 'Internal error'], [400, 'Unsupported rich content']]) {
+      api.replies.sendRichMessage = { error, description }
+      const after = api.calls.length
+      await assert.rejects(send(), failure => failure.status === error && failure.message === description)
+      assert.equal(api.calls.slice(after).filter(call => call.method === 'sendMessage').length, 0)
+      assert.deepEqual(warnings.at(-1), [method === 'send' ? 'ds-bot: Telegram rich send failed: %s' : 'ds-bot: Telegram rich card send failed: %s', description])
+    }
+    assert.equal(warnings.length, 5)
+  })
+}
+
+for (const method of ['send', 'edit']) {
+  test(`${method} retries only parse-entities failures with the original plain text and markup`, async t => {
+    const api = await fakeApi()
+    api.holdPoll = true
+    const handle = telegram.connect({ token: 'TOKEN' }, env(api.api), { onStatus() {} })
+    t.after(() => { handle.stop(); api.close() })
+    const chat = { key: '5', threadId: 17 }
+    const buttons = [{ label: 'Choose', data: 'choice' }]
+    const apiMethod = method === 'send' ? 'sendMessage' : 'editMessageText'
+    const send = text => method === 'send' ? handle.send(chat, { text, buttons }) : handle.edit(chat, 42, { text, buttons })
+    for (const { text, html, description, retry, error = 400 } of [
+      { text: '**Body**', html: '<b>Body</b>', description: "Bad Request: can't parse entities", retry: true },
+      { text: 'a < b', html: 'a &lt; b', description: 'PARSE ENTITIES invalid', retry: true },
+      { text: 'plain', html: 'plain', description: "can't parse entities", retry: method === 'edit' },
+      { text: '**Body**', html: '<b>Body</b>', description: 'Forbidden', retry: false, error: 403 },
+      { text: '**Body**', html: '<b>Body</b>', description: 'parse entities', retry: true, error: 429 },
+    ]) {
+      api.replies[apiMethod] = params => params.parse_mode === 'HTML' ? { error, description } : { result: { message_id: 43 } }
+      const after = api.calls.length
+      if (retry) {
+        assert.deepEqual(await send(text), method === 'send' ? { messageId: 43 } : undefined)
+      } else await assert.rejects(send(text), failure => failure.status === error && failure.message === description)
+      const params = { chat_id: '5', ...(method === 'send' ? { message_thread_id: 17 } : { message_id: 42 }), reply_markup: { inline_keyboard: [[{ text: 'Choose', callback_data: 'choice' }]] } }
+      assert.deepEqual(api.calls.slice(after).filter(call => call.method === apiMethod).map(call => call.params), [
+        { ...params, text: html, parse_mode: 'HTML' },
+        ...(retry ? [{ ...params, text: text === '**Body**' ? 'Body' : text }] : []),
+      ])
+    }
+    api.replies[apiMethod] = params => params.parse_mode === 'HTML'
+      ? { error: 400, description: 'parse entities' }
+      : { error: 500, description: 'Plain retry failed' }
+    const after = api.calls.length
+    await assert.rejects(send('**Body**'), /Plain retry failed/)
+    assert.equal(api.calls.slice(after).filter(call => call.method === apiMethod).length, 2)
+  })
+}
