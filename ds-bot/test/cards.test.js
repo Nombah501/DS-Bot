@@ -30,7 +30,8 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0 } = {}) =>
   const cards = cardJournal({
     store: { of: async () => data, peek: () => data, save: () => {} },
     connections: () => ({ [conn.id]: conn }),
-    textFor: () => key => `<${key}>`,
+    textForChat: () => key => `<${key}>`,
+    textForPerson: () => key => `<${key}>`,
     handleOf: () => handle,
     enqueue: (_conn, chatKey, job) => { queue.push({ chatKey, job }) },
     paired: (_conn, id) => conn.paired.some(person => person.id === id),

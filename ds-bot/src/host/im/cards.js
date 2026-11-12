@@ -18,7 +18,7 @@ export const settledCard = (card, answer, labels) => ({
  * @param {{of: (id: string) => Promise<{cards: object}>, peek: (id: string) => {cards: object}|undefined, save: (id: string) => void}} deps.store
  * @param {(conn: object) => (cardKey: string, entries: object[]) => boolean} deps.sourceOpen  whether the thing a Card asks about still waits
  */
-export function cardJournal({ store, connections, textFor, handleOf, enqueue, paired, sourceOpen, warn, readOnly }) {
+export function cardJournal({ store, connections, textForChat, textForPerson, handleOf, enqueue, paired, sourceOpen, warn, readOnly }) {
   // Public copies of expired Private cards already queued, per adapter handle: a
   // restarted connection has a new handle and queues them again.
   const privateQueued = new WeakMap()
@@ -26,7 +26,11 @@ export function cardJournal({ store, connections, textFor, handleOf, enqueue, pa
     const chat = conn.chats?.[entry.chatKey]
     return chat === undefined ? undefined : { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
   }
-  const textOf = (conn, entry) => textFor(conn, entry.receiverUserId === undefined ? conn?.chats?.[entry.chatKey] : entry)
+  // A Private card speaks to its receiver, falling back to the chat's language
+  // when Telegram did not report theirs; a shared copy speaks to the chat.
+  const textOf = (conn, entry) => entry.receiverUserId === undefined
+    ? textForChat(conn, entry.chatKey)
+    : textForPerson(conn, { id: entry.receiverUserId, languageCode: entry.languageCode ?? conn?.chats?.[entry.chatKey]?.languageCode })
 
   const record = async (id, cardKey, chat, messageId, body, card, cardFormat, copy = {}) => {
     const data = await store.of(id)
@@ -70,7 +74,7 @@ export function cardJournal({ store, connections, textFor, handleOf, enqueue, pa
         const address = addressOf(conn, entry)
         if (address === undefined) continue
         entry.edited = true
-        const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${textFor(conn, conn.chats[entry.chatKey])('answered')})`
+        const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${textForChat(conn, entry.chatKey)('answered')})`
         const editing = entry.receiverUserId !== undefined && typeof handle.editPrivateCard === 'function'
           ? handle.editPrivateCard(address, entry, entry.card)
           : entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof handle.editCard === 'function'
@@ -100,7 +104,7 @@ export function cardJournal({ store, connections, textFor, handleOf, enqueue, pa
         const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
           && imPlatform(conn.platform)?.privateCards === true && typeof handle?.sendPrivateCard === 'function'
         const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + PRIVATE_MS } : {}) }
-        const text = textFor(conn, privateCard ? initiator.sender : chat)
+        const text = privateCard ? textForPerson(conn, initiator.sender) : textForChat(conn, chat.key)
         const rendered = typeof body === 'function' ? body(text) : body
         const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
         const card = imPlatform(conn.platform)?.richCards === true && typeof handle?.sendCard === 'function' ? structured?.(text) : undefined

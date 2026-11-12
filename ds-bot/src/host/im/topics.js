@@ -47,7 +47,7 @@ export function accessTargets(person, state) {
   ].filter(target => allows(person, target))
 }
 
-export function privateTopicCreator(rt, handleOf, textFor) {
+export function privateTopicCreator(rt, handleOf, textForChat) {
   const pending = new Map()
   return function ensurePrivateTopics(conn, chatKey) {
     const key = JSON.stringify([conn.id, chatKey])
@@ -64,7 +64,7 @@ export function privateTopicCreator(rt, handleOf, textFor) {
         const reason = name === undefined ? 'topicDeleted' : !allows(person, topic.target) ? 'topicRevoked' : undefined
         if (reason !== undefined && typeof handle.closeTopic === 'function') {
           if (!topic.notified) {
-            await handle.send(address, { text: textFor(conn, chat)(reason, { name: topic.name }) })
+            await handle.send(address, { text: textForChat(conn, chatKey)(reason, { name: topic.name }) })
             topic.notified = true
             await rt.save()
           }

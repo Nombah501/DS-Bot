@@ -4,7 +4,7 @@ import { settledCard } from './cards.js'
 
 // Bind Cards belong to their requesting person and physical Topic, not the
 // Topic's current target: an unbound/inaccessible Topic must still be bindable.
-export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, textFor, may }) {
+export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, textForPerson, may }) {
   const nameOf = target => (target.botId === undefined ? rt.roomOf(target.roomId) : rt.botOf(target.botId))?.name
   const admin = async (conn, chat, sender, action) => {
     const handle = handleOf(conn.id)
@@ -13,13 +13,13 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
     } catch (error) {
       rt.warn('ds-bot: forum admin check failed: %s', rt.redactSecrets(String(error?.message ?? error)))
     }
-    await sendCardReply(conn, chat, textFor(conn, sender)('bindAdmin'), action)
+    await sendCardReply(conn, chat, textForPerson(conn, sender)('bindAdmin'), action)
     return false
   }
   return {
     async command(conn, msg) {
       const saved = conn.chats[msg.chat.key]
-      const text = textFor(conn, msg.sender)
+      const text = textForPerson(conn, msg.sender)
       if (saved?.isForum !== true || msg.chat.kind !== 'group') {
         sendText(conn, msg.chat, text('bindForum'))
         return
@@ -45,7 +45,7 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
       } })
     },
     async action(conn, action) {
-      const text = textFor(conn, action.sender)
+      const text = textForPerson(conn, action.sender)
       const saved = conn.chats?.[action.chat.key]
       const key = action.chat.threadId ?? 1
       const held = saved?.bindCards?.[key]

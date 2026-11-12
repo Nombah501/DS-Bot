@@ -14,6 +14,7 @@ import { addressKey, cleanAccess, migrateTopics, privateTopicCreator, topicResto
 import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
+import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
 import { statusData, statusPanels } from './status-panel.js'
 
@@ -29,281 +30,27 @@ export function install(rt) {
   const { ctx, state } = rt
   const statusSteps = new Map()
   const imDir = join(rt.home, 'im')
-  const langKey = () => {
-    const label = String(rt.uiLanguage?.() ?? '')
-    if (label.startsWith('Traditional Chinese')) return 'zh-TW'
-    if (label.startsWith('Chinese')) return 'zh'
-    if (label.startsWith('Japanese')) return 'ja'
-    if (label.startsWith('Korean')) return 'ko'
-    if (label.startsWith('Spanish')) return 'es'
-    if (label.startsWith('French')) return 'fr'
-    if (label.startsWith('German')) return 'de'
-    return 'en'
+  // Telegram notices follow one Paired person: their /lang choice, else their
+  // Telegram language. Other platforms, and unknown people, use DS Bot's language.
+  const translator = (conn, who) => (key, values) => {
+    if (conn.platform !== 'telegram') return translate(localeOf({ uiLanguage: rt.uiLanguage?.() }), key, values)
+    const { personId, languageCode } = who()
+    const preference = conn.paired?.find(person => person.id === personId)?.language
+    return translate(localeOf({ preference, languageCode, uiLanguage: rt.uiLanguage?.() }), key, values)
   }
-  const text = (key, values = {}, languageCode, english = false) => {
-    const lang = english ? 'en' : String(languageCode ?? '').toLowerCase().startsWith('ru') ? 'ru' : langKey()
-    const table = {
-      ru: {
-        requested: 'Запрос на подключение отправлен в DS Bot; разрешите его на компьютере в Настройки → IM.',
-        unbound: 'Этот IM-бот ещё не привязан к Bot; выберите его в DS Bot: Настройки → IM.',
-        unboundGroup: 'Эта группа ещё не привязана; выберите для неё группу или Bot в DS Bot: Настройки → IM.',
-        connected: `Подключено — теперь можно общаться с ${values.target}.`,
-        stopped: 'Остановлено.',
-        idle: 'Сейчас ничего не выполняется.',
-        working: 'Работает',
-        statusPanel: 'Панель состояния',
-        statusIdle: 'Свободен',
-        statusWaiting: 'Ждёт ответа на карточку',
-        statusTool: 'Инструмент',
-        statusStep: 'Шаг',
-        statusElapsed: 'Время хода',
-        statusSending: 'Останавливаем…',
-        statusFailed: 'Не удалось отправить. Повторите попытку.',
-        stop: 'Остановить',
-        paired: 'Подключено — выберите Topic нужного Bot или группы.',
-        denied: 'Этот Bot или группа не входят в ваш список доступа.',
-        topicDeleted: `Topic закрыта: ${values.name} удалён.`,
-        topicRevoked: `Topic закрыта: ${values.name} больше не входит в ваш список доступа.`,
-        bindChoose: 'Выберите Bot или группу для этой Topic.',
-        bindAdmin: 'Для /bind нужны права администратора Telegram. Убедитесь, что Bridge-бот — администратор группы.',
-        bindForum: 'Используйте /bind в Topic форум-супергруппы.',
-        bindEmpty: 'В вашем списке доступа нет Bots или групп для привязки.',
-        bindHint: 'Эта Topic не привязана. Администратор группы может выбрать Bot или группу командой /bind.',
-        bindBound: `Topic привязана к ${values.target}.`,
-        stale: 'На эту карточку уже ответили.',
-        privateOnly: 'Только инициатор может ответить на эту карточку.',
-        noFile: 'Этот файл нельзя отправить здесь; отправьте его на компьютере.',
-        greeting: `Здравствуйте, я ${values.name}.`,
-        question: `${values.bot} спрашивает: `,
-        approval: `${values.bot} запрашивает разрешение: `,
-        secretAsk: `${values.bot} нужен ключ ${values.name} — введите его на компьютере или в приложении на телефоне.`,
-        viewShow: `${values.bot} отправил карточку — ответьте на компьютере или в приложении на телефоне.`,
-        answered: 'отвечено',
-        numbers: 'ответьте номером',
-        numbersMulti: 'ответьте номерами через пробел',
-        allow: 'Разрешить один раз',
-        reject: 'Отклонить',
-        done: 'Готово',
-        selectOne: 'Выберите хотя бы один вариант.',
-        language: `Язык: ${values.language}. Выберите: /lang ru, /lang en, /lang auto (язык Telegram).`,
-      },
-      en: {
-        requested: 'A connection request was sent to DS Bot; allow it in Settings → IM on the computer.',
-        unbound: 'This IM bot is not bound to a Bot yet; pick one in DS Bot Settings → IM.',
-        unboundGroup: 'This group is not bound yet; pick a group or a Bot for it in DS Bot Settings → IM.',
-        connected: `Connected — you can talk to ${values.target} now.`,
-        stopped: 'Stopped.',
-        idle: 'Nothing is running.',
-        stale: 'This card was already answered.',
-        noFile: 'This file cannot be sent here; send it on the computer.',
-        greeting: `Hello, I am ${values.name}.`,
-        question: `${values.bot} asks: `,
-        approval: `${values.bot} asks for approval: `,
-        secretAsk: `${values.bot} needs the key ${values.name} — fill it on the computer or the phone app.`,
-        viewShow: `${values.bot} shared a card — answer it on the computer or the phone app.`,
-        answered: 'answered',
-        numbers: 'reply with the number',
-        numbersMulti: 'reply with the numbers, separated by spaces',
-        allow: 'Allow once',
-        reject: 'Reject',
-        working: 'Working',
-        statusPanel: 'Status panel',
-        statusIdle: 'Idle',
-        statusWaiting: 'Waiting for a Card',
-        statusTool: 'Tool',
-        statusStep: 'Step',
-        statusElapsed: 'Turn elapsed',
-        statusSending: 'Stopping…',
-        statusFailed: 'Not sent. Try again.',
-        stop: 'Stop',
-        paired: 'Connected — choose a Topic for the Bot or group.',
-        denied: 'This Bot or group is not on your Access list.',
-        topicDeleted: `Topic closed: ${values.name} was deleted.`,
-        topicRevoked: `Topic closed: ${values.name} is no longer on your Access list.`,
-        bindChoose: 'Choose a Bot or group for this Topic.',
-        bindAdmin: 'Telegram administrator rights are required for /bind. Make sure the Bridge bot is a group administrator.',
-        bindForum: 'Use /bind in a forum supergroup Topic.',
-        bindEmpty: 'Your Access list has no Bots or groups to bind.',
-        bindHint: 'This Topic is not bound. A group administrator can choose a Bot or group with /bind.',
-        bindBound: `Topic bound to ${values.target}.`,
-        privateOnly: 'Only the Initiator can answer this card.',
-        done: 'Done',
-        selectOne: 'Select at least one option.',
-        language: `Language: ${values.language}. Choose: /lang ru, /lang en, /lang auto (Telegram language).`,
-      },
-      zh: {
-        requested: '已向 DS Bot 发出连接请求，请在电脑上的 DS Bot 设置 → IM 里允许。',
-        unbound: '这个 IM 机器人还没绑定 Bot，请在 DS Bot 设置 → IM 里选一个。',
-        unboundGroup: '这个群还没绑定，请在 DS Bot 设置 → IM 里给它选一个群或 Bot。',
-        connected: `已连接，现在可以和 ${values.target} 说话了。`,
-        stopped: '已停下。',
-        idle: '现在没有在做的活。',
-        stale: '这张卡已经答过了。',
-        noFile: '这个文件发不过去，请在电脑上发。',
-        greeting: `你好，我是 ${values.name}。`,
-        question: `${values.bot} 问你：`,
-        approval: `${values.bot} 请你审批：`,
-        secretAsk: `${values.bot} 要密钥 ${values.name}，请在电脑或手机 App 上填。`,
-        viewShow: `${values.bot} 发了一个卡片，请在电脑或手机 App 上回复。`,
-        answered: '已答',
-        numbers: '回复编号',
-        numbersMulti: '回复编号，多选用空格隔开',
-        allow: '允许一次',
-        reject: '拒绝',
-        working: '进行中',
-        statusPanel: '状态面板',
-        statusIdle: '空闲',
-        statusWaiting: '等待卡片回复',
-        statusTool: '工具',
-        statusStep: '步骤',
-        statusElapsed: '本轮用时',
-        statusSending: '正在停止…',
-        statusFailed: '未发送，请重试。',
-        stop: '停止',
-        paired: 'Connected — choose a Topic for the Bot or group.',
-        denied: '此 Bot 或群组不在你的访问列表中。',
-        topicDeleted: `话题已关闭：${values.name} 已删除。`,
-        topicRevoked: `话题已关闭：${values.name} 已不在你的访问列表中。`,
-        bindChoose: 'Choose a Bot or group for this Topic.',
-        bindAdmin: 'Telegram administrator rights are required for /bind. Make sure the Bridge bot is a group administrator.',
-        bindForum: 'Use /bind in a forum supergroup Topic.',
-        bindEmpty: 'Your Access list has no Bots or groups to bind.',
-        bindHint: 'This Topic is not bound. A group administrator can choose a Bot or group with /bind.',
-        bindBound: `Topic bound to ${values.target}.`,
-        privateOnly: '只有发起人可以回答这张卡。',
-        done: '完成',
-        selectOne: '请至少选择一个选项。',
-        language: `语言：${values.language}。请选择：/lang ru、/lang en、/lang auto（跟随 Telegram）。`,
-      },
-      'zh-TW': {
-        requested: '已向 DS Bot 發出連線請求，請在電腦上的 DS Bot 設定 → IM 裡允許。',
-        unbound: '這個 IM 機器人還沒綁定 Bot，請在 DS Bot 設定 → IM 裡選一個。',
-        unboundGroup: '這個群還沒綁定，請在 DS Bot 設定 → IM 裡給它選一個群或 Bot。',
-        connected: `已連線，現在可以和 ${values.target} 說話了。`,
-        stopped: '已停下。',
-        idle: '現在沒有在做的活。',
-        stale: '這張卡已經答過了。',
-        noFile: '這個檔案傳不過去，請在電腦上傳。',
-        greeting: `你好，我是 ${values.name}。`,
-        question: `${values.bot} 問你：`,
-        approval: `${values.bot} 請你審批：`,
-        secretAsk: `${values.bot} 要金鑰 ${values.name}，請在電腦或手機 App 上填。`,
-        viewShow: `${values.bot} 發了一個卡片，請在電腦或手機 App 上回覆。`,
-        answered: '已答',
-        numbers: '回覆編號',
-        numbersMulti: '回覆編號，多選用空格隔開',
-        allow: '允許一次',
-        reject: '拒絕',
-      },
-      ja: {
-        requested: 'DS Bot に接続リクエストを送信しました。PC の DS Bot 設定 → IM で許可してください。',
-        unbound: 'この IM ボットはまだ Bot に紐付けられていません。DS Bot 設定 → IM で選択してください。',
-        unboundGroup: 'このグループはまだ紐付けられていません。DS Bot 設定 → IM でグループまたは Bot を選択してください。',
-        connected: `接続しました。${values.target} と話せます。`,
-        stopped: '停止しました。',
-        idle: '実行中のタスクはありません。',
-        stale: 'このカードは回答済みです。',
-        noFile: 'このファイルはここでは送信できません。PC から送信してください。',
-        greeting: `こんにちは、${values.name} です。`,
-        question: `${values.bot} からの質問：`,
-        approval: `${values.bot} からの承認リクエスト：`,
-        secretAsk: `${values.bot} がシークレット ${values.name} を必要としています。PC またはスマホアプリで入力してください。`,
-        viewShow: `${values.bot} がカードを共有しました。PC またはスマホアプリで回答してください。`,
-        answered: '回答済み',
-        numbers: '番号を返信',
-        numbersMulti: '番号をスペース区切りで返信',
-        allow: '1回許可',
-        reject: '拒否',
-      },
-      ko: {
-        requested: 'DS Bot에 연결 요청을 보냈습니다. 컴퓨터의 DS Bot 설정 → IM에서 허용해 주세요.',
-        unbound: '이 IM 봇은 아직 Bot에 연결되지 않았습니다. DS Bot 설정 → IM에서 선택해 주세요.',
-        unboundGroup: '이 그룹은 아직 연결되지 않았습니다. DS Bot 설정 → IM에서 그룹이나 Bot을 선택해 주세요.',
-        connected: `연결되었습니다. 이제 ${values.target}와(과) 대화할 수 있습니다.`,
-        stopped: '중지되었습니다.',
-        idle: '진행 중인 작업이 없습니다.',
-        stale: '이미 응답한 카드입니다.',
-        noFile: '이 파일은 여기서 보낼 수 없습니다. 컴퓨터에서 보내 주세요.',
-        greeting: `안녕하세요, ${values.name}입니다.`,
-        question: `${values.bot}의 질문: `,
-        approval: `${values.bot}의 승인 요청: `,
-        secretAsk: `${values.bot}에서 시크릿 ${values.name}이(가) 필요합니다. 컴퓨터나 휴대폰 앱에서 입력해 주세요.`,
-        viewShow: `${values.bot}에서 카드를 보냈습니다. 컴퓨터나 휴대폰 앱에서 응답해 주세요.`,
-        answered: '응답함',
-        numbers: '번호로 답장',
-        numbersMulti: '공백으로 구분하여 번호로 답장',
-        allow: '한 번 허용',
-        reject: '거부',
-      },
-      es: {
-        requested: 'Se envió una solicitud de conexión a DS Bot; permítela en Ajustes → IM en el ordenador.',
-        unbound: 'Este bot de IM aún no está vinculado a un Bot; elige uno en Ajustes de DS Bot → IM.',
-        unboundGroup: 'Este grupo aún no está vinculado; elige un grupo o un Bot en Ajustes de DS Bot → IM.',
-        connected: `Conectado — ya puedes hablar con ${values.target}.`,
-        stopped: 'Detenido.',
-        idle: 'No hay nada en curso.',
-        stale: 'Esta tarjeta ya fue respondida.',
-        noFile: 'Este archivo no se puede enviar por aquí; envíalo desde el ordenador.',
-        greeting: `Hola, soy ${values.name}.`,
-        question: `${values.bot} pregunta: `,
-        approval: `${values.bot} pide aprobación: `,
-        secretAsk: `${values.bot} necesita la clave ${values.name} — rellénala en el ordenador o en la app móvil.`,
-        viewShow: `${values.bot} compartió una tarjeta — respóndela en el ordenador o en la app móvil.`,
-        answered: 'respondido',
-        numbers: 'responde con el número',
-        numbersMulti: 'responde con los números separados por espacios',
-        allow: 'Permitir una vez',
-        reject: 'Rechazar',
-      },
-      fr: {
-        requested: 'Une demande de connexion a été envoyée à DS Bot ; autorisez-la dans Paramètres → IM sur l’ordinateur.',
-        unbound: 'Ce bot IM n’est pas encore lié à un Bot ; choisissez-en un dans Paramètres DS Bot → IM.',
-        unboundGroup: 'Ce groupe n’est pas encore lié ; choisissez un groupe ou un Bot dans Paramètres DS Bot → IM.',
-        connected: `Connecté — vous pouvez maintenant parler à ${values.target}.`,
-        stopped: 'Arrêté.',
-        idle: 'Rien n’est en cours.',
-        stale: 'Cette carte a déjà reçu une réponse.',
-        noFile: 'Ce fichier ne peut pas être envoyé ici ; envoyez-le depuis l’ordinateur.',
-        greeting: `Bonjour, je suis ${values.name}.`,
-        question: `${values.bot} demande : `,
-        approval: `${values.bot} demande une approbation : `,
-        secretAsk: `${values.bot} a besoin de la clé ${values.name} — renseignez-la sur l’ordinateur ou l’application mobile.`,
-        viewShow: `${values.bot} a partagé une carte — répondez-y sur l’ordinateur ou l’application mobile.`,
-        answered: 'répondu',
-        numbers: 'répondez avec le numéro',
-        numbersMulti: 'répondez avec les numéros séparés par des espaces',
-        allow: 'Autoriser une fois',
-        reject: 'Refuser',
-      },
-      de: {
-        requested: 'Eine Verbindungsanfrage wurde an DS Bot gesendet; erlaube sie am Computer unter Einstellungen → IM.',
-        unbound: 'Dieser IM-Bot ist noch keinem Bot zugewiesen; wähle einen in den DS Bot-Einstellungen → IM.',
-        unboundGroup: 'Diese Gruppe ist noch nicht zugewiesen; wähle eine Gruppe oder einen Bot in den DS Bot-Einstellungen → IM.',
-        connected: `Verbunden — du kannst jetzt mit ${values.target} sprechen.`,
-        stopped: 'Gestoppt.',
-        idle: 'Aktuell läuft nichts.',
-        stale: 'Diese Karte wurde bereits beantwortet.',
-        noFile: 'Diese Datei kann hier nicht gesendet werden; sende sie am Computer.',
-        greeting: `Hallo, ich bin ${values.name}.`,
-        question: `${values.bot} fragt: `,
-        approval: `${values.bot} bittet um Freigabe: `,
-        secretAsk: `${values.bot} benötigt den Schlüssel ${values.name} — gib ihn am Computer oder in der Smartphone-App ein.`,
-        viewShow: `${values.bot} hat eine Karte geteilt — beantworte sie am Computer oder in der Smartphone-App.`,
-        answered: 'beantwortet',
-        numbers: 'mit der Nummer antworten',
-        numbersMulti: 'mit durch Leerzeichen getrennten Nummern antworten',
-        allow: 'Einmal erlauben',
-        reject: 'Ablehnen',
-      },
-    }
-    return (table[lang] ?? table.en)[key] ?? table.en[key] ?? key
-  }
-  const textFor = (conn, chat) => (key, values) => {
-    if (conn.platform !== 'telegram') return text(key, values)
-    const saved = conn.chats?.[chat?.key ?? chat?.chatKey]
-    const personId = chat?.id ?? chat?.receiverUserId ?? chat?.personId ?? chat?.lastSenderId ?? saved?.personId ?? saved?.lastSenderId
-    const language = conn.paired?.find(person => person.id === personId)?.language
-    return text(key, values, language === 'ru' || language === 'en' ? language : chat?.languageCode ?? saved?.languageCode, language === 'en')
+  // Answers to someone who just wrote or pressed: that sender.
+  const textForPerson = (conn, sender) => translator(conn, () => ({ personId: sender?.id, languageCode: sender?.languageCode }))
+  // Output to a chat: its owner in a private chat, its last speaker in a group.
+  const textForChat = (conn, chatKey) => translator(conn, () => {
+    const saved = conn.chats?.[chatKey]
+    return { personId: saved?.personId ?? saved?.lastSenderId, languageCode: saved?.languageCode }
+  })
+  // The single writer of who last spoke in a saved chat and in which language.
+  const heard = async (conn, chat, sender) => {
+    if (conn.platform !== 'telegram' || chat === undefined || (chat.languageCode === sender.languageCode && chat.lastSenderId === sender.id)) return
+    chat.languageCode = sender.languageCode
+    chat.lastSenderId = sender.id
+    await rt.save()
   }
 
   // ---------------------------------------------------------------- runtime file
@@ -406,7 +153,8 @@ export function install(rt) {
   const cards = cardJournal({
     store: { of: cardsOf, peek: id => runtimes.get(id)?.data, save: scheduleWrite },
     connections,
-    textFor,
+    textForChat,
+    textForPerson,
     handleOf: id => runners.get(id)?.handle,
     enqueue: (conn, chatKey, job) => enqueue(conn, chatKey, job),
     paired: (conn, personId) => paired(conn, personId),
@@ -419,7 +167,7 @@ export function install(rt) {
   /** @type {Map<string, {handle:any, queues:Map<string, {jobs:any[], retry?:any}>, statuses:Map}>} */
   const runners = new Map()
   const statuses = new Map()
-  const ensurePrivateTopics = privateTopicCreator(rt, id => runners.get(id)?.handle, textFor)
+  const ensurePrivateTopics = privateTopicCreator(rt, id => runners.get(id)?.handle, textForChat)
   const restoreTopic = topicRestorer(rt, id => runners.get(id)?.handle, (conn, address, target) => place.deliverable(conn, address, { target }))
   const recoverTopic = async (conn, chat) => {
     const oldThreadId = chat.threadId
@@ -526,10 +274,10 @@ export function install(rt) {
   }
 
   // Shared Stop path for /stop, Drafts and the Status panel.
-  const stopTarget = async (conn, chat, target, action) => {
+  const stopTarget = async (conn, chat, target, text, action) => {
     runners.get(conn.id)?.drafts?.endTarget(target)
     const stopped = target.botId !== undefined ? await rt.stopChat(target.botId) : await rt.stopRoomWork(target.roomId)
-    await sendCardReply(conn, chat, textFor(conn, chat)(stopped ? 'stopped' : 'idle'), action)
+    await sendCardReply(conn, chat, text(stopped ? 'stopped' : 'idle'), action)
     return stopped
   }
   const onStop = (conn) => async ({ chat, draftId }) => {
@@ -541,14 +289,14 @@ export function install(rt) {
     const target = current === undefined ? undefined : place.targetOf(conn, chat)
     if (!place.may(conn, current?.personId, target)) return
     if (target === undefined || target.botId !== copy.target.botId || target.roomId !== copy.target.roomId) return
-    await stopTarget(conn, { ...copy.chat, languageCode: current.languageCode }, target)
+    await stopTarget(conn, copy.chat, target, textForChat(conn, chat.key))
   }
   const onWidgetQuery = conn => async action => {
     if (imPlatform(conn.platform)?.statusPanel !== true || action.chat.kind !== 'direct'
       || action.type !== 'data' || action.data !== 'stop' || !paired(conn, action.sender.id)) return
     const record = runners.get(conn.id)?.panels?.find(action.chat.key, action.messageId)
     if (record === undefined || !place.may(conn, action.sender.id, record.target)) return
-    await stopTarget(conn, { ...record.chat, languageCode: action.sender.languageCode }, record.target)
+    await stopTarget(conn, record.chat, record.target, textForPerson(conn, action.sender))
   }
 
   const questionById = (id) => {
@@ -557,8 +305,8 @@ export function install(rt) {
     }
     return undefined
   }
-  const answerQuestionCard = async (conn, chat, cardKey, labels, action) => {
-    const text = textFor(conn, chat)
+  const answerQuestionCard = async (conn, chat, cardKey, labels, sender, action) => {
+    const text = textForPerson(conn, sender)
     const held = cards.open(conn, chat, cardKey)
     if (held === undefined) return false
     const found = questionById(held.cardKey.slice(2))
@@ -583,7 +331,7 @@ export function install(rt) {
     return true
   }
   const answerApprovalCard = async (conn, chat, cardKey, choice, sender, action) => {
-    const text = textFor(conn, chat)
+    const text = textForPerson(conn, sender)
     const held = cards.open(conn, chat, cardKey, action)
     if (held === undefined) return false
     if (held.entry.receiverUserId !== undefined && (
@@ -610,14 +358,10 @@ export function install(rt) {
     return sendText(conn, chat, body)
   }
 
-  const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, enqueue, sendText, sendCardReply, textFor, may: place.may })
+  const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, enqueue, sendText, sendCardReply, textForPerson, may: place.may })
 
   const onMessage = (conn) => async (msg) => {
-    const text = textFor(conn, msg.sender)
-    if (conn.platform === 'telegram') {
-      msg.chat.languageCode = msg.sender.languageCode
-      msg.chat.lastSenderId = msg.sender.id
-    }
+    const text = textForPerson(conn, msg.sender)
     if (!paired(conn, msg.sender.id)) {
       if (msg.chat.kind === 'group' && !msg.mentioned) return
       if (!requested(conn, msg)) return
@@ -646,11 +390,7 @@ export function install(rt) {
       chat.personId = msg.sender.id
       await rt.save()
     }
-    if (conn.platform === 'telegram' && (chat.languageCode !== msg.sender.languageCode || chat.lastSenderId !== msg.sender.id)) {
-      chat.languageCode = msg.sender.languageCode
-      chat.lastSenderId = msg.sender.id
-      await rt.save()
-    }
+    await heard(conn, chat, msg.sender)
     if (conn.platform === 'telegram' && /^\/lang(?:@\S+)?(?:\s|$)/.test(body)) {
       const person = conn.paired.find(person => person.id === msg.sender.id)
       const language = body.split(/\s+/).slice(1).join(' ')
@@ -676,7 +416,7 @@ export function install(rt) {
         await sendText(conn, msg.chat, text(unboundKey))
         return
       }
-      await stopTarget(conn, msg.chat, target)
+      await stopTarget(conn, msg.chat, target, text)
       return
     }
     if (imPlatform(conn.platform)?.topics === true && /^\/status(?:@\S+)?\s*$/.test(body)) {
@@ -721,7 +461,7 @@ export function install(rt) {
             await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
             return
           }
-          if (inRange && await answerQuestionCard(conn, msg.chat, held.cardKey, picked.map(index => options[index - 1].label))) return
+          if (inRange && await answerQuestionCard(conn, msg.chat, held.cardKey, picked.map(index => options[index - 1].label), msg.sender)) return
         }
       } else if (held !== undefined && held.cardKey.startsWith('a:')
         && picked.length === 1 && (picked[0] === 1 || picked[0] === 2)
@@ -768,20 +508,16 @@ export function install(rt) {
   const onAction = (conn) => async (action) => {
     if (!paired(conn, action.sender.id)) {
       if (imPlatform(conn.platform)?.statusPanel === true && String(action.data ?? '').startsWith('t:')) {
-        await sendCardReply(conn, action.chat, textFor(conn, action.sender)('denied'), action)
+        await sendCardReply(conn, action.chat, textForPerson(conn, action.sender)('denied'), action)
       }
       return
     }
-    const text = textFor(conn, action.sender)
-    if (conn.platform === 'telegram' && conn.chats?.[action.chat.key] !== undefined) {
-      conn.chats[action.chat.key].languageCode = action.sender.languageCode
-      conn.chats[action.chat.key].lastSenderId = action.sender.id
-      await rt.save()
-    }
+    const text = textForPerson(conn, action.sender)
+    await heard(conn, conn.chats?.[action.chat.key], action.sender)
     const data = String(action.data ?? '')
-    const chat = { ...action.chat, languageCode: action.sender.languageCode, ...(conn.platform === 'telegram' ? { lastSenderId: action.sender.id } : {}) }
+    const { chat } = action
     if (imPlatform(conn.platform)?.topics === true && data.startsWith('b:')) {
-      await forumBind.action(conn, { ...action, chat })
+      await forumBind.action(conn, action)
       return
     }
     // Button data is `<kind>:<id>:<choice>`; the id is everything between the
@@ -806,7 +542,7 @@ export function install(rt) {
       }
       // Claim this snapshot before cancellation yields, so a second press cannot stop twice.
       await cards.claim(conn, cardKey, text => text('stopped'), [])
-      await stopTarget(conn, chat, entry.target, action)
+      await stopTarget(conn, chat, entry.target, text, action)
       await cards.edits(conn)
       return
     }
@@ -834,7 +570,7 @@ export function install(rt) {
           await sendCardReply(conn, chat, text('selectOne'), action)
           return
         }
-        if (!(await answerQuestionCard(conn, chat, key, selected, action))) await sendCardReply(conn, chat, text('stale'), action)
+        if (!(await answerQuestionCard(conn, chat, key, selected, action.sender, action))) await sendCardReply(conn, chat, text('stale'), action)
         return
       }
       const option = /^\d+$/.test(choice) ? entry.card.options[Number(choice)] : undefined
@@ -850,7 +586,7 @@ export function install(rt) {
         await sendCardReply(conn, chat, text('stale'), action)
         return
       }
-      if (!(await answerQuestionCard(conn, chat, cardKey, [label], action))) await sendCardReply(conn, chat, text('stale'), action)
+      if (!(await answerQuestionCard(conn, chat, cardKey, [label], action.sender, action))) await sendCardReply(conn, chat, text('stale'), action)
       return
     }
     if (data.startsWith('a:') && cut > 2) {
@@ -929,7 +665,7 @@ export function install(rt) {
           : cardKey.startsWith('v:') ? openViews.has(cardKey)
             : cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
               ? entries.some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
-                && statusData(rt, entry.target, textFor(conn, conn.chats?.[entry.chatKey]), statusSteps).active)
+                && statusData(rt, entry.target, textForChat(conn, entry.chatKey), statusSteps).active)
               : false
   }
 
@@ -1009,7 +745,7 @@ export function install(rt) {
       if (platform?.statusPanel === true && typeof handle.sendStatusPanel === 'function' && typeof handle.editStatusPanel === 'function') {
         runner.panels = statusPanels(handle, {
           records: (await runtimeOf(conn.id)).data.panels,
-          snapshot: record => statusData(rt, record.target, textFor(fresh(conn.id) ?? conn, record.chat), statusSteps),
+          snapshot: record => statusData(rt, record.target, textForChat(fresh(conn.id) ?? conn, record.chat.key), statusSteps),
           valid: record => {
             const current = fresh(conn.id)
             return current !== undefined && place.deliverable(current, record.chat, { target: record.target })
@@ -1017,7 +753,7 @@ export function install(rt) {
           },
           save: () => scheduleWrite(conn.id),
           recover: chat => recoverTopic(fresh(conn.id) ?? conn, chat),
-          textOf: record => textFor(fresh(conn.id) ?? conn, record.chat),
+          textOf: record => textForChat(fresh(conn.id) ?? conn, record.chat.key),
           warn: error => rt.warn('ds-bot: Status panel update failed: %s', rt.redactSecrets(String(error?.message ?? error))),
         })
       }
@@ -1241,7 +977,7 @@ export function install(rt) {
         await rt.save()
         if (imPlatform(conn.platform)?.topics === true) await ensurePrivateTopics(conn, request.chatKey)
         const chat = conn.chats[request.chatKey]
-        const text = textFor(conn, chat)
+        const text = textForChat(conn, request.chatKey)
         const target = place.targetOf(conn, { key: request.chatKey, kind: request.chatKind })
         const name = target === undefined ? undefined : targetName(conn, target)
         await sendText(conn, { key: request.chatKey, kind: request.chatKind, title: chat.title },
