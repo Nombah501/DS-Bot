@@ -1177,9 +1177,13 @@ export function install(rt) {
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
       return
     }
+    const conns = Object.values(connections())
+    for (const conn of conns) {
+      cards.claim(conn, `a:${data.id}`, text => data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
+    }
     void (async () => {
-      for (const conn of Object.values(connections())) {
-        await cards.settle(conn, `a:${data.id}`, text => data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
+      for (const conn of conns) {
+        await cards.edits(conn)
       }
     })().catch(() => {})
   })
@@ -1208,14 +1212,23 @@ export function install(rt) {
 
   const imView = () => ({ connections: Object.values(connections()).map(viewOf), platforms: IM_PLATFORMS.filter(platform => adaptersFor().includes(platform.id)).map(platform => platform.id) })
   const imStatusView = () => Object.fromEntries([...statuses.entries()].map(([id, status]) => [id, { state: status.state, ...(status.error !== undefined ? { error: status.error } : {}), at: status.at }]))
-  const imQuestionAnswered = async (question, answer) => {
+  const imQuestionClaimed = (question, answer) => {
     const selected = (answer?.selected ?? []).filter(label => question.options?.some(option => option.label === label))
     const labels = question.multiSelect === true ? [...new Set(selected)] : selected.slice(0, 1)
+    const rollbacks = []
     for (const conn of Object.values(connections())) {
       if (imPlatform(conn.platform)?.richCards !== true) continue
-      await cards.settle(conn, `q:${question.id}`, labels.length ? labels.join(', ') : text => text('answered'), labels)
+      const rollback = cards.claim(conn, `q:${question.id}`, labels.length ? labels.join(', ') : text => text('answered'), labels)
+      if (rollback !== undefined) rollbacks.push(rollback)
+    }
+    return () => Promise.all(rollbacks.map(rollback => rollback()))
+  }
+  const imQuestionAnswered = async () => {
+    for (const conn of Object.values(connections())) {
+      if (imPlatform(conn.platform)?.richCards !== true) continue
+      await cards.edits(conn)
     }
   }
 
-  Object.assign(rt, { imView, imStatusView, imViaView, imEndpoint, imQuestionAnswered })
+  Object.assign(rt, { imView, imStatusView, imViaView, imEndpoint, imQuestionClaimed, imQuestionAnswered })
 }

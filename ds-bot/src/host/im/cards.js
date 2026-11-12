@@ -22,6 +22,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   // Public copies of expired Private cards already queued, per adapter handle: a
   // restarted connection has a new handle and queues them again.
   const privateQueued = new WeakMap()
+  const editing = new WeakMap()
   const addressOf = (conn, entry) => {
     const chat = conn.chats?.[entry.chatKey]
     return chat === undefined ? undefined : { key: entry.chatKey, kind: chat.kind, title: chat.title, ...(entry.threadId === undefined ? {} : { threadId: entry.threadId }) }
@@ -50,16 +51,33 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
   }
 
   // Sets the answer on every copy without editing: a second press already sees it.
-  const claim = async (conn, cardKey, answer, selected) => {
-    const data = await store.of(conn.id)
-    const entries = data.cards[cardKey]
+  const claim = (conn, cardKey, answer, selected) => {
+    const data = store.peek(conn.id)
+    const entries = data?.cards[cardKey]
     if (entries === undefined) return
+    const claimed = []
     for (const entry of entries) {
       if (entry.answer !== undefined) continue
       entry.answer = typeof answer === 'function' ? answer(textOf(connections()[conn.id], entry)) : answer
+      claimed.push(entry)
+      delete entry.edited
       if (entry.card !== undefined) entry.card.settled = settledCard(entry.card, entry.answer, selected ?? [entry.answer])
     }
     store.save(conn.id)
+    if (claimed.length === 0) return
+    return async () => {
+      // Delivery failed: reopen only copies this claim answered, even if a save
+      // already edited and pruned them while the source was absent.
+      data.cards[cardKey] ??= entries
+      for (const entry of claimed) {
+        delete entry.answer
+        if (entry.card !== undefined) delete entry.card.settled
+        if (entry.edited !== undefined) entry.edited = false
+      }
+      store.save(conn.id)
+      await Promise.all(claimed.map(entry => editing.get(entry)))
+      await edits(conn)
+    }
   }
 
   // Buttons drop and the answer shows wherever a copy was answered; a failed edit
@@ -70,20 +88,23 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     if (handle?.edit === undefined || data === undefined) return
     for (const entries of Object.values(data.cards)) {
       for (const entry of entries) {
-        if (entry.deleted || entry.answer === undefined || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || entry.edited === true) continue
+        if (entry.deleted || (entry.answer === undefined && entry.edited !== false) || (entry.messageId === undefined && entry.ephemeralMessageId === undefined) || entry.edited === true) continue
         const address = addressOf(conn, entry)
         if (address === undefined) continue
         entry.edited = true
-        const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${textForChat(conn, entry.chatKey)('answered')})`
-        const editing = entry.receiverUserId !== undefined && typeof handle.editPrivateCard === 'function'
+        const body = entry.answer === undefined ? entry.text : entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${textForChat(conn, entry.chatKey)('answered')})`
+        const edit = entry.receiverUserId !== undefined && typeof handle.editPrivateCard === 'function'
           ? handle.editPrivateCard(address, entry, entry.card)
           : entry.card !== undefined && imPlatform(conn.platform)?.richCards === true && typeof handle.editCard === 'function'
             ? handle.editCard(address, entry.messageId, entry.card, entry.cardFormat)
             : handle.edit(address, entry.messageId, { text: body })
-        await editing.catch(error => {
+        const pending = edit.catch(error => {
           entry.edited = false
           if (!error?.stopped) warn('ds-bot: im settled card edit failed: %s', error)
         })
+        editing.set(entry, pending)
+        await pending
+        editing.delete(entry)
         store.save(conn.id)
       }
     }

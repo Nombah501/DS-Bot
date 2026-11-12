@@ -826,13 +826,16 @@ export function install(rt) {
     if (reply === undefined) throw Object.assign(new Error('Nothing to send'), { code: 'bot/invalid' })
     // Claim the question before queueing so a second answer is refused.
     delete state.questions[sessionId]
+    let rollback
     try {
+      rollback = rt.imQuestionClaimed?.(question, answer)
       await rt.ensureCapabilities(sessionId)
       const agent = await rt.resolveAgent(sessionId)
       agent.followup(createUserMessage({ content: [{ type: 'text', text: reply.text }], source: reply.source }))
       await ctx.sessions.flush(agent.session)
     } catch (error) {
       state.questions[sessionId] ??= question
+      await rollback?.().catch(failure => rt.warn('ds-bot: question answer rollback failed: %s', failure))
       throw error
     }
     await rt.imQuestionAnswered?.(question, answer).catch(error => rt.warn('ds-bot: question answer notification failed: %s', error))
