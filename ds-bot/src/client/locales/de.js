@@ -1,6 +1,19 @@
 // German (de) localization for DS Bot client and DSH settings namespaces.
 
 export const DE = {
+  'Default Bot': 'Standard-Bot',
+  'Access list': 'Zugriffsliste',
+  'Turns started outside Telegram': 'Außerhalb von Telegram gestartete Durchgänge',
+  'All messages': 'Alle Nachrichten',
+  'Cards only': 'Nur Karten',
+  Nothing: 'Nichts',
+  'Choose all messages, Cards only or nothing': 'Alle Nachrichten, nur Karten oder nichts auswählen',
+  'All Bots and groups': 'Alle Bots und Gruppen',
+  'Selected: {count}': 'Ausgewählt: {count}',
+  'Choose all Bots and groups or an Access list of existing Bots and groups': 'Alle Bots und Gruppen oder eine Zugriffsliste vorhandener Bots und Gruppen auswählen',
+  'This platform has no Access lists': 'Diese Plattform unterstützt keine Zugriffslisten',
+  'No such paired person': 'Diese gekoppelte Person gibt es nicht',
+  'Telegram did not return a Topic ID': 'Telegram hat keine Themen-ID zurückgegeben',
   "Android beta": "Android-Beta",
   "Cannot reach the Server. Trying again…": "Server nicht erreichbar. Neuer Versuch…",
   "No phones yet": "Noch keine Telefone",

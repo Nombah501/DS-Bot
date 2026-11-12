@@ -1,6 +1,19 @@
 // French (fr) localization for DS Bot client and DSH settings namespaces.
 
 export const FR = {
+  'Default Bot': 'Bot par défaut',
+  'Access list': 'Liste d’accès',
+  'Turns started outside Telegram': 'Tours démarrés hors de Telegram',
+  'All messages': 'Tous les messages',
+  'Cards only': 'Cartes uniquement',
+  Nothing: 'Rien',
+  'Choose all messages, Cards only or nothing': 'Choisissez tous les messages, les cartes uniquement ou rien',
+  'All Bots and groups': 'Tous les Bots et groupes',
+  'Selected: {count}': 'Sélectionnés : {count}',
+  'Choose all Bots and groups or an Access list of existing Bots and groups': 'Choisissez tous les Bots et groupes ou une liste d’accès de Bots et groupes existants',
+  'This platform has no Access lists': 'Cette plateforme ne prend pas en charge les listes d’accès',
+  'No such paired person': 'Cette personne associée n’existe pas',
+  'Telegram did not return a Topic ID': 'Telegram n’a pas renvoyé d’identifiant de sujet',
   "Android beta": "Android bêta",
   "Cannot reach the Server. Trying again…": "Impossible de joindre le serveur. Nouvel essai…",
   "No phones yet": "Aucun téléphone pour l’instant",

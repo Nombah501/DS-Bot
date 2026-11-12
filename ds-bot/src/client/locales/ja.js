@@ -1,6 +1,19 @@
 // Japanese (ja) localization for DS Bot client and DSH settings namespaces.
 
 export const JA = {
+  'Default Bot': 'デフォルトの Bot',
+  'Access list': 'アクセスリスト',
+  'Turns started outside Telegram': 'Telegram 外で開始したターン',
+  'All messages': 'すべてのメッセージ',
+  'Cards only': 'カードのみ',
+  Nothing: '何も送らない',
+  'Choose all messages, Cards only or nothing': 'すべてのメッセージ、カードのみ、何も送らないから選択',
+  'All Bots and groups': 'すべての Bot とグループ',
+  'Selected: {count}': '選択済み: {count}',
+  'Choose all Bots and groups or an Access list of existing Bots and groups': 'すべての Bot とグループ、または既存の Bot とグループのアクセスリストを選択',
+  'This platform has no Access lists': 'このプラットフォームはアクセスリストに対応していません',
+  'No such paired person': 'このペアリング済みユーザーは存在しません',
+  'Telegram did not return a Topic ID': 'Telegram からトピック ID が返されませんでした',
   "Android beta": "Android ベータ版",
   "Cannot reach the Server. Trying again…": "サーバーに接続できません。再試行しています…",
   "No phones yet": "スマートフォンはまだありません",

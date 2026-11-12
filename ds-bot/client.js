@@ -123,6 +123,19 @@ function convertHostErrors(pairs) {
 
 // src/client/locales/ja.js
 var JA = {
+  "Default Bot": "デフォルトの Bot",
+  "Access list": "アクセスリスト",
+  "Turns started outside Telegram": "Telegram 外で開始したターン",
+  "All messages": "すべてのメッセージ",
+  "Cards only": "カードのみ",
+  Nothing: "何も送らない",
+  "Choose all messages, Cards only or nothing": "すべてのメッセージ、カードのみ、何も送らないから選択",
+  "All Bots and groups": "すべての Bot とグループ",
+  "Selected: {count}": "選択済み: {count}",
+  "Choose all Bots and groups or an Access list of existing Bots and groups": "すべての Bot とグループ、または既存の Bot とグループのアクセスリストを選択",
+  "This platform has no Access lists": "このプラットフォームはアクセスリストに対応していません",
+  "No such paired person": "このペアリング済みユーザーは存在しません",
+  "Telegram did not return a Topic ID": "Telegram からトピック ID が返されませんでした",
   "Android beta": "Android ベータ版",
   "Cannot reach the Server. Trying again…": "サーバーに接続できません。再試行しています…",
   "No phones yet": "スマートフォンはまだありません",
@@ -2394,6 +2407,19 @@ var DSH_JA = {
 
 // src/client/locales/ko.js
 var KO = {
+  "Default Bot": "기본 Bot",
+  "Access list": "접근 목록",
+  "Turns started outside Telegram": "Telegram 외부에서 시작된 턴",
+  "All messages": "모든 메시지",
+  "Cards only": "카드만",
+  Nothing: "보내지 않음",
+  "Choose all messages, Cards only or nothing": "모든 메시지, 카드만 또는 보내지 않음 중 선택",
+  "All Bots and groups": "모든 Bot 및 그룹",
+  "Selected: {count}": "선택됨: {count}",
+  "Choose all Bots and groups or an Access list of existing Bots and groups": "모든 Bot 및 그룹 또는 기존 Bot 및 그룹의 접근 목록 선택",
+  "This platform has no Access lists": "이 플랫폼은 접근 목록을 지원하지 않습니다",
+  "No such paired person": "해당 페어링된 사용자가 없습니다",
+  "Telegram did not return a Topic ID": "Telegram이 토픽 ID를 반환하지 않았습니다",
   "Android beta": "Android 베타",
   "Cannot reach the Server. Trying again…": "서버에 연결할 수 없습니다. 다시 시도하는 중…",
   "No phones yet": "아직 휴대폰이 없습니다",
@@ -4710,6 +4736,19 @@ var DSH_KO = {
 
 // src/client/locales/es.js
 var ES = {
+  "Default Bot": "Bot predeterminado",
+  "Access list": "Lista de acceso",
+  "Turns started outside Telegram": "Turnos iniciados fuera de Telegram",
+  "All messages": "Todos los mensajes",
+  "Cards only": "Solo tarjetas",
+  Nothing: "Nada",
+  "Choose all messages, Cards only or nothing": "Elige todos los mensajes, solo tarjetas o nada",
+  "All Bots and groups": "Todos los Bots y grupos",
+  "Selected: {count}": "Seleccionados: {count}",
+  "Choose all Bots and groups or an Access list of existing Bots and groups": "Elige todos los Bots y grupos o una lista de acceso de Bots y grupos existentes",
+  "This platform has no Access lists": "Esta plataforma no admite listas de acceso",
+  "No such paired person": "No existe esa persona vinculada",
+  "Telegram did not return a Topic ID": "Telegram no devolvió un ID de tema",
   "Android beta": "Android beta",
   "Cannot reach the Server. Trying again…": "No se puede conectar con el servidor. Reintentando…",
   "No phones yet": "Aún no hay teléfonos",
@@ -7026,6 +7065,19 @@ var DSH_ES = {
 
 // src/client/locales/fr.js
 var FR = {
+  "Default Bot": "Bot par défaut",
+  "Access list": "Liste d’accès",
+  "Turns started outside Telegram": "Tours démarrés hors de Telegram",
+  "All messages": "Tous les messages",
+  "Cards only": "Cartes uniquement",
+  Nothing: "Rien",
+  "Choose all messages, Cards only or nothing": "Choisissez tous les messages, les cartes uniquement ou rien",
+  "All Bots and groups": "Tous les Bots et groupes",
+  "Selected: {count}": "Sélectionnés : {count}",
+  "Choose all Bots and groups or an Access list of existing Bots and groups": "Choisissez tous les Bots et groupes ou une liste d’accès de Bots et groupes existants",
+  "This platform has no Access lists": "Cette plateforme ne prend pas en charge les listes d’accès",
+  "No such paired person": "Cette personne associée n’existe pas",
+  "Telegram did not return a Topic ID": "Telegram n’a pas renvoyé d’identifiant de sujet",
   "Android beta": "Android bêta",
   "Cannot reach the Server. Trying again…": "Impossible de joindre le serveur. Nouvel essai…",
   "No phones yet": "Aucun téléphone pour l’instant",
@@ -9297,6 +9349,19 @@ var DSH_FR = {
 
 // src/client/locales/de.js
 var DE = {
+  "Default Bot": "Standard-Bot",
+  "Access list": "Zugriffsliste",
+  "Turns started outside Telegram": "Außerhalb von Telegram gestartete Durchgänge",
+  "All messages": "Alle Nachrichten",
+  "Cards only": "Nur Karten",
+  Nothing: "Nichts",
+  "Choose all messages, Cards only or nothing": "Alle Nachrichten, nur Karten oder nichts auswählen",
+  "All Bots and groups": "Alle Bots und Gruppen",
+  "Selected: {count}": "Ausgewählt: {count}",
+  "Choose all Bots and groups or an Access list of existing Bots and groups": "Alle Bots und Gruppen oder eine Zugriffsliste vorhandener Bots und Gruppen auswählen",
+  "This platform has no Access lists": "Diese Plattform unterstützt keine Zugriffslisten",
+  "No such paired person": "Diese gekoppelte Person gibt es nicht",
+  "Telegram did not return a Topic ID": "Telegram hat keine Themen-ID zurückgegeben",
   "Android beta": "Android-Beta",
   "Cannot reach the Server. Trying again…": "Server nicht erreichbar. Neuer Versuch…",
   "No phones yet": "Noch keine Telefone",

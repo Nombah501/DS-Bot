@@ -1,6 +1,19 @@
 // Korean (ko) localization for DS Bot client and DSH settings namespaces.
 
 export const KO = {
+  'Default Bot': '기본 Bot',
+  'Access list': '접근 목록',
+  'Turns started outside Telegram': 'Telegram 외부에서 시작된 턴',
+  'All messages': '모든 메시지',
+  'Cards only': '카드만',
+  Nothing: '보내지 않음',
+  'Choose all messages, Cards only or nothing': '모든 메시지, 카드만 또는 보내지 않음 중 선택',
+  'All Bots and groups': '모든 Bot 및 그룹',
+  'Selected: {count}': '선택됨: {count}',
+  'Choose all Bots and groups or an Access list of existing Bots and groups': '모든 Bot 및 그룹 또는 기존 Bot 및 그룹의 접근 목록 선택',
+  'This platform has no Access lists': '이 플랫폼은 접근 목록을 지원하지 않습니다',
+  'No such paired person': '해당 페어링된 사용자가 없습니다',
+  'Telegram did not return a Topic ID': 'Telegram이 토픽 ID를 반환하지 않았습니다',
   "Android beta": "Android 베타",
   "Cannot reach the Server. Trying again…": "서버에 연결할 수 없습니다. 다시 시도하는 중…",
   "No phones yet": "아직 휴대폰이 없습니다",
