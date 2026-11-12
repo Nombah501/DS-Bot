@@ -3,6 +3,7 @@
 import { chunkTelegram } from '../format.js'
 import { chunkRich, RICH_LIMIT } from '../rich-format.js'
 import { retryDelay, retryWait } from './retry.js'
+import { platformError } from '../errors.js'
 
 const TEXT_LIMIT = 4096
 const POLL_TIMEOUT = 50
@@ -18,7 +19,7 @@ const plainCard = card => ({
 const cardChunks = card => {
   const options = card.settled === undefined ? (card.options ?? []) : card.settled.options
   const rows = options.map(option => {
-    if (card.settled === undefined && (Buffer.byteLength(option.data) > 64 || option.data.length === 0)) throw Object.assign(new Error('Telegram card callback must be 1–64 bytes'), { permanent: true })
+    if (card.settled === undefined && (Buffer.byteLength(option.data) > 64 || option.data.length === 0)) throw platformError('Telegram card callback must be 1–64 bytes', { permanent: true })
     const action = card.settled === undefined ? `type="callback_data" data="${escape(option.data)}"` : 'type="disabled"'
     return `<tg-button-row><tg-button ${action}${option.style ? ` style="${escape(option.style)}"` : ''}>${escape(optionLabel(option))}</tg-button></tg-button-row>`
   }).join('\n')
@@ -83,9 +84,9 @@ export default {
 
   async check(fields, env) {
     const token = String(fields.token ?? '').trim()
-    if (token === '') throw new Error('Paste the bot token first')
+    if (token === '') throw platformError('Paste the bot token first')
     const me = await callApi(env, token, 'getMe', {})
-    if (typeof me?.id !== 'number' || typeof me.username !== 'string') throw new Error('Telegram did not say who this token belongs to')
+    if (typeof me?.id !== 'number' || typeof me.username !== 'string') throw platformError('Telegram did not say who this token belongs to')
     return { account: { id: String(me.id), name: `@${me.username}`, ...(me.has_topics_enabled === true ? { hasTopicsEnabled: true } : {}) } }
   },
 
@@ -113,25 +114,25 @@ export default {
           signal: abort.signal,
         })
         if (download) {
-          if (!response.ok) throw Object.assign(new Error(`Telegram answered ${response.status}`), { status: response.status, permanent: response.status >= 400 && response.status < 500 })
+          if (!response.ok) throw platformError(`Telegram answered ${response.status}`, { status: response.status, permanent: response.status >= 400 && response.status < 500 })
           return new Uint8Array(await response.arrayBuffer())
         }
         const body = await response.json().catch(() => ({}))
         if (!body.ok) {
-          const error = new Error(String(body.description ?? `Telegram answered ${response.status}`))
-          error.status = body.error_code ?? response.status
-          if (body.parameters?.retry_after !== undefined) error.retryAfter = Number(body.parameters.retry_after)
-          error.permanent = error.status >= 400 && error.status < 500 && error.status !== 429
-          error.topicMissing = error.status === 400 && /(?:message )?thread not found|message_thread_invalid/i.test(error.message)
-          throw error
+          const message = String(body.description ?? `Telegram answered ${response.status}`)
+          const status = body.error_code ?? response.status
+          throw platformError(message, {
+            status,
+            ...(body.parameters?.retry_after !== undefined ? { retryAfter: Number(body.parameters.retry_after) } : {}),
+            permanent: status >= 400 && status < 500 && status !== 429,
+            topicMissing: status === 400 && /(?:message )?thread not found|message_thread_invalid/i.test(message),
+          })
         }
         return body.result
       } catch (error) {
         if (stopped) throw stoppedError()
         if (error?.name === 'AbortError' || error?.name === 'TimeoutError') {
-          const timeout = new Error('Telegram did not answer in time')
-          timeout.unknown = true
-          throw timeout
+          throw platformError('Telegram did not answer in time', { unknown: true })
         }
         throw error
       } finally {
@@ -139,7 +140,7 @@ export default {
         inFlight.delete(abort)
       }
     }
-    const stoppedError = () => Object.assign(new Error('stopped'), { stopped: true })
+    const stoppedError = () => platformError('stopped', { stopped: true })
 
     const getMe = async () => {
       const me = await call('getMe', {})
@@ -340,16 +341,16 @@ export default {
         return member?.status === 'creator' || member?.status === 'administrator'
       },
       sendStatusPanel: async (chat, { html, data, caption }) => {
-        if (chat.kind !== 'direct') throw new Error('Status widgets require a private chat')
+        if (chat.kind !== 'direct') throw platformError('Status widgets require a private chat')
         const sent = await call('sendWidget', { chat_id: chat.key, ...thread(chat), html, chat_data: data, caption, allow_queries: true })
-        if (!Number.isSafeInteger(sent?.message_id)) throw new Error('Telegram did not return a Status panel identity')
+        if (!Number.isSafeInteger(sent?.message_id)) throw platformError('Telegram did not return a Status panel identity')
         return { messageId: sent.message_id }
       },
       pinStatusPanel: (chat, messageId) => call('pinChatMessage', { chat_id: chat.key, message_id: messageId, disable_notification: true }),
       editStatusPanel: (chat, messageId, data) => call('editMessageWidgetData', { chat_id: chat.key, message_id: messageId, chat_data: data }),
       createTopic: async (chat, name) => {
         const topic = await call('createForumTopic', { chat_id: chat.key, name: Array.from(name).slice(0, 128).join('') })
-        if (!Number.isSafeInteger(topic?.message_thread_id) || topic.message_thread_id <= 0) throw new Error('Telegram did not return a Topic ID')
+        if (!Number.isSafeInteger(topic?.message_thread_id) || topic.message_thread_id <= 0) throw platformError('Telegram did not return a Topic ID')
         return { threadId: topic.message_thread_id }
       },
       renameTopic: (chat, name) => call('editForumTopic', { chat_id: chat.key, ...thread(chat), name: Array.from(name).slice(0, 128).join('') }),
@@ -387,7 +388,7 @@ export default {
             ephemeral_message_parameters: { receiver_user_id: Number(receiverUserId) },
             rich_message: { html: chunk.html },
           })
-          if (!Number.isSafeInteger(sent?.ephemeral_message_id)) throw Object.assign(new Error('Telegram did not return a Private card identity'), { permanent: true })
+          if (!Number.isSafeInteger(sent?.ephemeral_message_id)) throw platformError('Telegram did not return a Private card identity', { permanent: true })
           ephemeralMessageIds.push(sent.ephemeral_message_id)
         }
         return { ephemeralMessageId: ephemeralMessageIds.at(-1), ephemeralMessageIds, cardFormat: 'rich' }
@@ -445,6 +446,6 @@ async function callApi(env, token, method, params) {
     body: JSON.stringify(params),
   })
   const body = await response.json().catch(() => ({}))
-  if (!body.ok) throw new Error(String(body.description ?? `Telegram answered ${response.status}`))
+  if (!body.ok) throw platformError(String(body.description ?? `Telegram answered ${response.status}`))
   return body.result
 }

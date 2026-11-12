@@ -17,6 +17,7 @@ import { cardJournal } from './cards.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
 import { showStatus, statusData, statusPanels } from './status-panel.js'
+import { classify, recoverMissingTopic } from './errors.js'
 
 const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
@@ -203,11 +204,6 @@ export function install(rt) {
     if (typeof next.error === 'string' && next.error !== '') return statuses.set(id, { ...next, error: rt.redactSecrets(next.error), at: Date.now() })
     return statuses.set(id, { ...next, at: Date.now() })
   }
-  const failClass = (error) => {
-    if (error?.permanent === true || (typeof error?.status === 'number' && error.status >= 400 && error.status < 500 && error.status !== 429)) return 'permanent'
-    if (error?.unknown === true || error?.stopped === true) return 'drop'
-    return 'retry'
-  }
 
   const enqueue = (conn, chatKey, job) => {
     const runner = runners.get(conn.id)
@@ -247,23 +243,23 @@ export function install(rt) {
         queue.jobs.shift()
       } catch (caught) {
         let error = caught
-        if (imPlatform(conn.platform)?.topics === true && error?.topicMissing === true && !job.topicRecovered) {
+        if (imPlatform(conn.platform)?.topics === true && !job.topicRecovered) {
           try {
-            if (await recoverTopic(fresh(conn.id) ?? conn, job.chat)) {
+            if (await recoverMissingTopic(error, job.chat, chat => recoverTopic(fresh(conn.id) ?? conn, chat))) {
               job.topicRecovered = true
               continue
             }
           } catch (recoveryError) { error = recoveryError }
         }
-        const how = failClass(error)
-        if (how === 'retry') {
-          const wait = Number(error?.retryAfter) > 0 ? error.retryAfter * 1000 : RETRY_MS
+        const { kind, retryAfterMs } = classify(error, { topicRecovery: false })
+        if (kind === 'retry') {
+          const wait = retryAfterMs > 0 ? retryAfterMs : RETRY_MS
           queue.retry = setTimeout(() => { void drain(conn, chatKey) }, wait)
           queue.retry.unref?.()
           return
         }
         queue.jobs.shift()
-        if (how === 'permanent') setStatus(conn.id, { state: 'error', error: String(error?.message ?? error).slice(0, 300) })
+        if (kind === 'permanent') setStatus(conn.id, { state: 'error', error: String(error?.message ?? error).slice(0, 300) })
       }
     }
   }

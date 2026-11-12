@@ -14,8 +14,8 @@ async function fakeFeishu() {
   const frames = []
   const replies = {}
   const tokens = []
-  const json = (res, body) => {
-    res.writeHead(200, { 'content-type': 'application/json' })
+  const json = (res, body, status = 200) => {
+    res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
   }
   const authorized = (req) => req.headers.authorization === `Bearer ${tokens.at(-1)}`
@@ -27,7 +27,7 @@ async function fakeFeishu() {
       const params = JSON.parse(body || '{}')
       calls.push({ method: req.method, path: req.url, params, auth: req.headers.authorization })
       const override = replies[req.url]
-      if (override !== undefined) { json(res, override.result); return }
+      if (override !== undefined) { json(res, override.result, override.status); return }
       if (req.url === '/open-apis/auth/v3/tenant_access_token/internal') {
         if (params.app_id !== 'cli_a1' || params.app_secret !== 'sec') { json(res, { code: 10003, msg: 'invalid param' }); return }
         const token = `fs-tok-${tokens.length + 1}`
@@ -299,4 +299,21 @@ test('a socket that cannot be built at the handshake is retried (#1119)', async 
   const ready = await until(() => statuses.slice(statuses.indexOf(failed) + 1).find(status => status.state === 'ready'), 160)
   assert.ok(ready !== undefined, 'the connection became ready after a new socket')
   assert.equal(fake.sockets.length, 1)
+})
+
+test('send errors carry permanent policy for 4xx but retry 429 and 5xx', async t => {
+  const fake = await fakeFeishu()
+  const handle = feishu.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  await until(() => fake.sockets[0])
+  for (const [status, kind] of [[404, 'permanent'], [429, 'retry'], [503, 'retry'], [200, 'retry']]) {
+    fake.replies['/open-apis/im/v1/messages?receive_id_type=chat_id'] = { status, result: { code: 123, msg: 'refused' } }
+    await assert.rejects(handle.send({ key: 'ou_u1', kind: 'direct' }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.permanent, kind === 'permanent')
+      assert.equal(error.status, undefined, 'Feishu previously exposed only permanent')
+      return true
+    })
+  }
 })

@@ -469,3 +469,27 @@ for (const method of ['send', 'edit']) {
     assert.equal(api.calls.slice(after).filter(call => call.method === apiMethod).length, 2)
   })
 }
+
+test('send errors carry the platform contract, including missing Topics and rate limits', async t => {
+  const api = await fakeApi()
+  api.holdPoll = true
+  const handle = telegram.connect({ token: 'TOKEN' }, env(api.api), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); api.close() })
+  for (const [status, description, parameters, kind, retryAfter] of [
+    [400, 'Bad Request: message thread not found', undefined, 'topicMissing', undefined],
+    [404, 'Not found', undefined, 'permanent', undefined],
+    [429, 'Too Many Requests', { retry_after: '2' }, 'retry', 2],
+    [503, 'Unavailable', undefined, 'retry', undefined],
+  ]) {
+    api.replies.sendMessage = { error: status, description, parameters }
+    await assert.rejects(handle.send({ key: '5', kind: 'direct', threadId: 101 }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.status, status)
+      assert.equal(error.permanent, status >= 400 && status < 500 && status !== 429)
+      assert.equal(error.topicMissing, kind === 'topicMissing')
+      assert.equal(error.retryAfter, retryAfter)
+      return true
+    })
+  }
+})

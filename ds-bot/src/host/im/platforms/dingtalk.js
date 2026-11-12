@@ -7,6 +7,7 @@
 // NOTICE).
 import { chunkMarkdown } from '../format.js'
 import { retryDelay, retryWait } from './retry.js'
+import { platformError } from '../errors.js'
 
 const GATEWAY = 'https://api.dingtalk.com'
 const OAPI = 'https://oapi.dingtalk.com'
@@ -62,7 +63,7 @@ export default {
             body: JSON.stringify({ msgtype: 'markdown', markdown: { title: chunk.slice(0, 30), text: chunk } }),
           })
           const body = await response.json().catch(() => ({}))
-          if (body.errcode !== 0) throw Object.assign(new Error(String(body.errmsg ?? 'DingTalk refused the reply')), { permanent: true })
+          if (body.errcode !== 0) throw platformError(String(body.errmsg ?? 'DingTalk refused the reply'), { permanent: true })
           messageId = String(body.processQueryKey ?? messageId ?? '')
           continue
         }
@@ -120,14 +121,12 @@ export default {
           }),
         })
         if (!response.ok && !(response.status >= 500 || response.status === 429)) {
-          throw Object.assign(new Error(`DingTalk answered ${response.status}`), { permanent: true })
+          throw platformError(`DingTalk answered ${response.status}`, { permanent: true })
         }
         const body = await response.json().catch(() => ({}))
         if (body.endpoint === undefined) {
-          const error = new Error(String(body.message ?? body.error ?? 'DingTalk refused the connection'))
           // A 200 that names no endpoint is the platform refusing the app.
-          error.permanent = response.ok
-          throw error
+          throw platformError(String(body.message ?? body.error ?? 'DingTalk refused the connection'), { permanent: response.ok })
         }
         url = `${body.endpoint}?ticket=${body.ticket}`
         openFailures = 0
@@ -224,16 +223,14 @@ async function appToken(fields, env) {
   const response = await env.fetch(url)
   const body = await response.json().catch(() => ({}))
   if (body.errcode !== 0 || body.access_token === undefined) {
-    const error = new Error(String(body.errmsg ?? 'DingTalk refused these credentials'))
     // A 5xx or a 429 is the service, not the credentials: retry those.
-    error.permanent = !(response.status >= 500 || response.status === 429)
-    throw error
+    throw platformError(String(body.errmsg ?? 'DingTalk refused these credentials'), { permanent: !(response.status >= 500 || response.status === 429) })
   }
   return { accessToken: body.access_token, expiresAt: Date.now() + Math.max(60, Number(body.expires_in ?? 7200) - 300) * 1000 }
 }
 
 async function robot(env, token, clientId, path, body) {
-  if (token === undefined) throw Object.assign(new Error('DingTalk has no access token yet'), { permanent: false })
+  if (token === undefined) throw platformError('DingTalk has no access token yet', { permanent: false })
   const response = await env.fetch(`${gatewayBase(env)}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-acs-dingtalk-access-token': token },
@@ -241,9 +238,9 @@ async function robot(env, token, clientId, path, body) {
   })
   const json = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const error = new Error(String(json.message ?? json.errmsg ?? `DingTalk answered ${response.status}`))
-    error.permanent = response.status >= 400 && response.status < 500 && response.status !== 429
-    throw error
+    throw platformError(String(json.message ?? json.errmsg ?? `DingTalk answered ${response.status}`), {
+      permanent: response.status >= 400 && response.status < 500 && response.status !== 429,
+    })
   }
   return json
 }

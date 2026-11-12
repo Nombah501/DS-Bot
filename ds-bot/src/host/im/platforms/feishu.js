@@ -8,6 +8,7 @@
 // Protocol ported from @larksuiteoapi/node-sdk (MIT, see NOTICE).
 import { chunkMarkdown } from '../format.js'
 import { retryDelay, retryWait } from './retry.js'
+import { platformError } from '../errors.js'
 
 const TEXT_LIMIT = 4000
 
@@ -214,10 +215,10 @@ export default {
         url = body.data?.URL
         if (url === undefined || (body.code !== undefined && body.code !== 0)) {
           const reason = body.msg ?? `Feishu answered ${answer.status}`
-          const error = new Error(body.code === undefined ? reason : `${reason} (code ${body.code})`)
           // A 200 that carries no WebSocket URL is the platform refusing the app.
-          error.permanent = answer.ok || (answer.status >= 400 && answer.status < 500 && answer.status !== 429)
-          throw error
+          throw platformError(body.code === undefined ? reason : `${reason} (code ${body.code})`, {
+            permanent: answer.ok || (answer.status >= 400 && answer.status < 500 && answer.status !== 429),
+          })
         }
         openFailures = 0
       } catch (error) {
@@ -368,10 +369,8 @@ async function tenantToken(fields, env) {
   })
   const body = await response.json().catch(() => ({}))
   if (body.tenant_access_token === undefined) {
-    const error = new Error(body.msg ?? 'Feishu refused these credentials')
     // A 5xx or a 429 is the service, not the credentials: retry those.
-    error.permanent = !(response.status >= 500 || response.status === 429)
-    throw error
+    throw platformError(body.msg ?? 'Feishu refused these credentials', { permanent: !(response.status >= 500 || response.status === 429) })
   }
   return { token: body.tenant_access_token, expiresAt: Date.now() + Math.max(60, Number(body.expire ?? 7200) - 300) * 1000 }
 }
@@ -384,9 +383,9 @@ async function api(env, base, token, path, { method = 'GET', body } = {}) {
   })
   const json = await response.json().catch(() => ({}))
   if (!response.ok || (json.code !== undefined && json.code !== 0)) {
-    const error = new Error(String(json.msg ?? `Feishu answered ${response.status}`))
-    error.permanent = response.status >= 400 && response.status < 500 && response.status !== 429
-    throw error
+    throw platformError(String(json.msg ?? `Feishu answered ${response.status}`), {
+      permanent: response.status >= 400 && response.status < 500 && response.status !== 429,
+    })
   }
   return json
 }

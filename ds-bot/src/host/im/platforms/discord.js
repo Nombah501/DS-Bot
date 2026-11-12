@@ -4,6 +4,7 @@
 // INTERACTION_CREATE and are answered with a deferred update (type 6).
 // Wire details ported from dsh-im (MIT, see NOTICE).
 import { chunkMarkdown, toPlain } from '../format.js'
+import { platformError } from '../errors.js'
 
 const API = 'https://discord.com/api/v10'
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json'
@@ -15,13 +16,14 @@ const apiBase = env => String(env.config?.api ?? API).replace(/\/+$/, '')
 const wsBase = env => String(env.config?.gateway ?? GATEWAY)
 
 const errorOf = (body, status) => {
-  const error = new Error(String(body?.message ?? `Discord answered ${status}`))
-  error.status = status
-  if (body?.errors?.retry_after !== undefined || body?.retry_after !== undefined) error.retryAfter = Number(body.errors?.retry_after ?? body.retry_after) * 1000 / 1000
   // Discord's retry_after is in seconds, and may be fractional.
-  if (body?.retry_after !== undefined) error.retryAfter = Number(body.retry_after)
-  error.permanent = status >= 400 && status < 500 && status !== 429
-  return error
+  const retryAfter = body?.retry_after !== undefined ? Number(body.retry_after)
+    : body?.errors?.retry_after !== undefined ? Number(body.errors.retry_after) * 1000 / 1000 : undefined
+  return platformError(String(body?.message ?? `Discord answered ${status}`), {
+    status,
+    ...(retryAfter !== undefined ? { retryAfter } : {}),
+    permanent: status >= 400 && status < 500 && status !== 429,
+  })
 }
 
 export default {
@@ -29,7 +31,7 @@ export default {
 
   async check(fields, env) {
     const me = await request(env, fields, '/users/@me')
-    if (me?.id === undefined || me.bot !== true) throw new Error('This token does not belong to a Discord bot')
+    if (me?.id === undefined || me.bot !== true) throw platformError('This token does not belong to a Discord bot')
     return { account: { id: String(me.id), name: me.username ? `@${me.username}` : String(me.id) } }
   },
 

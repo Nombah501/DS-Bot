@@ -51,7 +51,7 @@ async function fakeIlink() {
         return
       }
       const answer = replies[req.url] ?? { ret: 0 }
-      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(answer))
+      res.writeHead(replies.http?.[req.url] ?? 200, { 'content-type': 'application/json', 'retry-after': '2' }); res.end(JSON.stringify(answer))
     })
   })
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve))
@@ -397,5 +397,30 @@ test('the poll never reports ready for a non-JSON or empty answer without ret', 
       handle.stop()
       await fake.close()
     }
+  }
+})
+
+test('send errors carry token, rate-limit and business-refusal policies unchanged', async t => {
+  const fake = await fakeIlink()
+  const handle = weixin.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  for (const [status, body, kind, permanent, retryAfter] of [
+    [401, {}, 'permanent', true, undefined],
+    [429, {}, 'retry', undefined, 2],
+    [503, {}, 'retry', undefined, undefined],
+    [404, {}, 'retry', undefined, undefined],
+    [200, { ret: 123, errmsg: 'refused' }, 'permanent', true, undefined],
+    [200, { ret: 429 }, 'retry', undefined, 2],
+  ]) {
+    fake.replies.http = { '/ilink/bot/sendmessage': status }
+    fake.replies['/ilink/bot/sendmessage'] = body
+    await assert.rejects(handle.send({ key: 'u1', kind: 'direct' }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.permanent, permanent)
+      assert.equal(error.retryAfter, retryAfter)
+      assert.equal(error.status, undefined, 'HTTP errors previously omitted status')
+      return true
+    })
   }
 })

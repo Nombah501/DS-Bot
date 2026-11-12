@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { addressKey, sameTarget } from './topics.js'
+import { classify, recoverMissingTopic } from './errors.js'
 
 // Conservative local policy, not a documented private-widget API quota.
 const UPDATE_MS = 1000
@@ -67,7 +68,7 @@ export function statusPanels(handle, { rt, steps, records, textForChat, delivera
     try {
       sent = await handle.sendStatusPanel(record.chat, content)
     } catch (error) {
-      if (error?.topicMissing !== true || !await recover(record.chat) || stopped || !valid(record)) throw error
+      if (!await recoverMissingTopic(error, record.chat, recover) || stopped || !valid(record)) throw error
       sent = await handle.sendStatusPanel(record.chat, content)
     }
     record.messageId = sent.messageId
@@ -96,7 +97,8 @@ export function statusPanels(handle, { rt, steps, records, textForChat, delivera
         save()
       }
     } catch (error) {
-      if (error.retryAfter !== undefined) last.set(record, Date.now() + Math.max(UPDATE_MS, Number(error.retryAfter) * 1000))
+      const { retryAfterMs } = classify(error)
+      if (retryAfterMs !== undefined) last.set(record, Date.now() + Math.max(UPDATE_MS, retryAfterMs))
       warn(error)
     } finally { inFlight.delete(record) }
   }

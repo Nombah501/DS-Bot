@@ -7,7 +7,7 @@ import { fakeWsServer } from './fake-ws.js'
 // pushed frames, aibot_send_msg answers through pending req_ids. Like the real
 // gateway it only takes the root path and matches Connection / Upgrade in their
 // exact case, so a lowercase handshake gets a 404.
-async function fakeWecom({ rejectStatus, subscribeReply } = {}) {
+async function fakeWecom({ rejectStatus, subscribeReply, sendReply } = {}) {
   const packets = []
   const upgrades = []
   const wss = await fakeWsServer({
@@ -29,7 +29,7 @@ async function fakeWecom({ rejectStatus, subscribeReply } = {}) {
           ws.send(JSON.stringify({ headers: { req_id: packet.headers.req_id }, ...(subscribeReply ?? { errcode: 0, errmsg: 'ok' }) }))
         }
         if (packet.cmd === 'aibot_send_msg') {
-          ws.send(JSON.stringify({ headers: { req_id: packet.headers.req_id }, errcode: 0, errmsg: 'ok', body: { msgid: 'w1' } }))
+          ws.send(JSON.stringify({ headers: { req_id: packet.headers.req_id }, ...(sendReply ?? { errcode: 0, errmsg: 'ok', body: { msgid: 'w1' } }) }))
         }
       })
     },
@@ -160,4 +160,19 @@ test('a dropped socket reconnects and subscribes again', async (t) => {
   ws.close()
   await until(() => fake.sockets.length === 2)
   await until(() => fake.packets.filter(packet => packet.cmd === 'aibot_subscribe').length === 2)
+})
+
+test('a refused send carries the permanent platform error contract', async t => {
+  const fake = await fakeWecom({ sendReply: { errcode: 123, errmsg: 'refused' } })
+  const statuses = []
+  const handle = wecom.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: status => statuses.push(status) })
+  t.after(() => { handle.stop(); fake.close() })
+  await until(() => statuses.some(status => status.state === 'ready'))
+  await assert.rejects(handle.send({ key: 'u9', kind: 'direct' }, { text: 'hello' }), error => {
+    assert.ok(error instanceof Error)
+    assert.equal(error.message, 'refused')
+    assert.equal(error.kind, 'permanent')
+    assert.equal(error.permanent, true)
+    return true
+  })
 })

@@ -33,7 +33,7 @@ async function fakeDingtalk() {
         return
       }
       const answer = replies[req.url] ?? { result: { processQueryKey: 'q2' } }
-      res.writeHead(200, { 'content-type': 'application/json' })
+      res.writeHead(answer.status ?? 200, { 'content-type': 'application/json' })
       res.end(JSON.stringify(answer.result))
     })
   })
@@ -197,4 +197,21 @@ test('a socket that cannot be built at the handshake is retried (#1119)', async 
   const ready = await until(() => statuses.slice(statuses.indexOf(failed) + 1).find(status => status.state === 'ready'), 160)
   assert.ok(ready !== undefined, 'the connection became ready after a new socket')
   assert.equal(fake.sockets.length, 1)
+})
+
+test('robot send errors carry permanent policy for 4xx but retry 429 and 5xx', async t => {
+  const fake = await fakeDingtalk()
+  const handle = dingtalk.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  await until(() => fake.sockets[0])
+  for (const [status, kind] of [[404, 'permanent'], [429, 'retry'], [503, 'retry']]) {
+    fake.replies['/v1.0/robot/oToMessages/batchSend'] = { status, result: { message: 'refused' } }
+    await assert.rejects(handle.send({ key: 'u9', kind: 'direct' }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.permanent, kind === 'permanent')
+      assert.equal(error.status, undefined, 'DingTalk previously exposed only permanent')
+      return true
+    })
+  }
 })

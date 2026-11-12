@@ -5,17 +5,16 @@
 // trigger. Buttons are Block Kit actions; block_actions come back as
 // interactive envelopes. Wire details ported from dsh-im (MIT, see NOTICE).
 import { chunkMarkdown } from '../format.js'
+import { platformError } from '../errors.js'
 
 const API = 'https://slack.com/api/'
 const TEXT_LIMIT = 4000
 
 const apiBase = env => `${String(env.config?.api ?? API).replace(/\/+$/, '')}/`
 
-const fail = (reason) => {
-  const error = new Error(`Slack answered ${String(reason).replaceAll('_', ' ')}`)
-  error.permanent = !['rate_limited', 'fatal_error', 'internal_error'].includes(String(reason))
-  return error
-}
+const fail = reason => platformError(`Slack answered ${String(reason).replaceAll('_', ' ')}`, {
+  permanent: !['rate_limited', 'fatal_error', 'internal_error'].includes(String(reason)),
+})
 
 const toMrkdwn = (markdown) => String(markdown ?? '')
   // fenced code keeps its contents verbatim
@@ -31,7 +30,7 @@ export default {
 
   async check(fields, env) {
     const me = await call(env, fields, 'auth.test', {})
-    if (me?.user_id === undefined) throw new Error('These credentials do not belong to a Slack bot')
+    if (me?.user_id === undefined) throw platformError('These credentials do not belong to a Slack bot')
     return { account: { id: String(me.user_id), name: me.user ? `@${me.user}` : String(me.user_id) } }
   },
 
@@ -51,7 +50,7 @@ export default {
         headers: { authorization: `Bearer ${appToken}` },
       })
       const body = await response.json().catch(() => ({}))
-      if (response.status === 429) throw Object.assign(new Error('Slack rate limited the connection'), { retryAfter: Number(response.headers.get('retry-after')) })
+      if (response.status === 429) throw platformError('Slack rate limited the connection', { retryAfter: Number(response.headers.get('retry-after')) })
       if (!body.ok) throw fail(body.error ?? `HTTP ${response.status}`)
       return body.url
     }
@@ -198,7 +197,7 @@ async function call(env, fields, method, params) {
     body: JSON.stringify(params),
   })
   const body = await response.json().catch(() => ({}))
-  if (response.status === 429) throw Object.assign(new Error('Slack rate limited the send'), { retryAfter: Number(response.headers.get('retry-after')) })
+  if (response.status === 429) throw platformError('Slack rate limited the send', { retryAfter: Number(response.headers.get('retry-after')) })
   if (!body.ok) throw fail(body.error ?? `HTTP ${response.status}`)
   return body
 }

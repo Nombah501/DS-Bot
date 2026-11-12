@@ -6,6 +6,7 @@
 // Wire details ported from @tencent-connect/qqbot-nodejs (MIT, see NOTICE).
 import { chunkMarkdown } from '../format.js'
 import { retryDelay, retryWait } from './retry.js'
+import { platformError } from '../errors.js'
 
 const API = 'https://api.sgroup.qq.com'
 const TOKEN_API = 'https://bots.qq.com'
@@ -24,10 +25,10 @@ const getToken = async (fields, env) => {
   })
   const body = await response.json().catch(() => ({}))
   if (body.access_token === undefined) {
-    const error = new Error(body.error_reason ?? body.error ?? 'QQ refused these credentials')
     // A refusal is not fixed by trying again; a server or network failure is.
-    error.permanent = response.ok || (response.status >= 400 && response.status < 500 && response.status !== 429)
-    throw error
+    throw platformError(body.error_reason ?? body.error ?? 'QQ refused these credentials', {
+      permanent: response.ok || (response.status >= 400 && response.status < 500 && response.status !== 429),
+    })
   }
   return { token: body.access_token, expiresAt: Date.now() + Math.max(10, Number(body.expires_in ?? 7200) - 300) * 1000 }
 }
@@ -178,9 +179,7 @@ export default {
             // A 200 that names no gateway is the platform refusing this app, the
             // same as DingTalk's missing endpoint and Feishu's missing URL;
             // retrying would send the same refusal again.
-            const refused = new Error(String(gateway?.message ?? gateway?.error ?? 'QQ refused the gateway'))
-            refused.permanent = true
-            throw refused
+            throw platformError(String(gateway?.message ?? gateway?.error ?? 'QQ refused the gateway'), { permanent: true })
           }
           gatewayUrl = gateway.url
           break
@@ -238,14 +237,14 @@ async function api(env, token, path, { method = 'GET', body } = {}) {
   const json = await response.json().catch(() => ({}))
   if (!response.ok || json.code !== undefined) {
     const reason = json.message ?? json.error ?? `QQ answered ${response.status}`
-    const error = new Error(String(reason))
-    error.status = response.status
     // A refusal outside the reply window or over quota is permanent; 4xx other
     // than auth problems too. 5xx and timeouts retry.
-    error.permanent = response.status >= 400 && response.status < 500 && response.status !== 429
-      || /reply.*window|quota|frequency|超过|过期/i.test(String(reason))
-    if (response.status === 429) error.retryAfter = Number(response.headers.get('retry-after'))
-    throw error
+    throw platformError(String(reason), {
+      status: response.status,
+      permanent: response.status >= 400 && response.status < 500 && response.status !== 429
+        || /reply.*window|quota|frequency|超过|过期/i.test(String(reason)),
+      ...(response.status === 429 ? { retryAfter: Number(response.headers.get('retry-after')) } : {}),
+    })
   }
   return json
 }

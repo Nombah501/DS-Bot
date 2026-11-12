@@ -140,3 +140,20 @@ test('a dropped socket reconnects and resumes the session', async (t) => {
   await until(() => fake.packets.some(packet => packet.op === 6))
   assert.ok(statuses.some(status => status.state === 'connecting'))
 })
+
+test('send errors carry status, fractional retry seconds and permanent policy', async t => {
+  const fake = await fakeDiscord()
+  const handle = discord.connect({ token: 'tok' }, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  for (const [status, retryAfter, kind] of [[404, undefined, 'permanent'], [429, 1.5, 'retry'], [503, undefined, 'retry']]) {
+    fake.replies['/api/v10/channels/dm1/messages'] = { error: status, retry_after: retryAfter }
+    await assert.rejects(handle.send({ key: 'dm1', kind: 'direct' }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.status, status)
+      assert.equal(error.retryAfter, retryAfter)
+      assert.equal(error.permanent, kind === 'permanent')
+      return true
+    })
+  }
+})

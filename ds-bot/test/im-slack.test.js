@@ -23,6 +23,11 @@ async function fakeSlack() {
       if (answer === undefined && method === 'apps.connections.open') answer = { result: { ok: true, url: wss.url } }
       if (typeof answer === 'function') answer = answer(params)
       if (answer === undefined) answer = { result: { ok: true, ts: '1700.1' } }
+      if (answer.status !== undefined) {
+        res.writeHead(answer.status, { 'content-type': 'application/json', 'retry-after': '2' })
+        res.end('{}')
+        return
+      }
       if (answer.error) {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: answer.error }))
@@ -143,4 +148,25 @@ test('a disconnect frame and a dropped socket both reconnect', async (t) => {
   fake.push(ws, { type: 'disconnect', reason: 'link_disabled' })
   await until(() => fake.sockets.length === 2)
   assert.ok(statuses.some(status => status.state === 'ready'))
+})
+
+test('send errors carry permanent policy and rate-limit seconds', async t => {
+  const fake = await fakeSlack()
+  const handle = slack.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  for (const [answer, kind, permanent, retryAfter] of [
+    [{ error: 'channel_not_found' }, 'permanent', true, undefined],
+    [{ error: 'internal_error' }, 'retry', false, undefined],
+    [{ error: 'rate_limited' }, 'retry', false, undefined],
+    [{ status: 429 }, 'retry', undefined, 2],
+  ]) {
+    fake.replies['chat.postMessage'] = answer
+    await assert.rejects(handle.send({ key: 'D1', kind: 'direct' }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.permanent, permanent)
+      assert.equal(error.retryAfter, retryAfter)
+      return true
+    })
+  }
 })

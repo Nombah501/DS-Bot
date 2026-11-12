@@ -11,6 +11,7 @@
 import { createDecipheriv } from 'node:crypto'
 import WebSocket from 'ws'
 import { chunkMarkdown } from '../format.js'
+import { platformError } from '../errors.js'
 
 const WSS = 'wss://openws.work.weixin.qq.com'
 const TEXT_LIMIT = 4000
@@ -42,9 +43,9 @@ export default {
         if (error === undefined) resolve({ account })
         else reject(error)
       }
-      const timer = setTimeout(() => finish(new Error('WeCom did not answer the subscription')), 10_000)
+      const timer = setTimeout(() => finish(platformError('WeCom did not answer the subscription')), 10_000)
       try { socket = new WebSocket(socketUrl(env)) } catch (error) {
-        finish(new Error(`WeCom could not open a socket: ${socketError(error)}`))
+        finish(platformError(`WeCom could not open a socket: ${socketError(error)}`))
         return
       }
       socket.on('open', () => {
@@ -55,9 +56,9 @@ export default {
         try { packet = JSON.parse(String(data)) } catch { return }
         if (packet.errcode === undefined) return
         if (packet.errcode === 0) finish(undefined, { id: botId, name: botId })
-        else finish(new Error(String(packet.errmsg ?? `WeCom answered ${packet.errcode}`)))
+        else finish(platformError(String(packet.errmsg ?? `WeCom answered ${packet.errcode}`)))
       })
-      socket.on('error', error => finish(new Error(`WeCom could not connect: ${socketError(error)}`)))
+      socket.on('error', error => finish(platformError(`WeCom could not connect: ${socketError(error)}`)))
       socket.on('close', () => {})
     })
   },
@@ -90,7 +91,7 @@ export default {
         return new Promise((resolve, reject) => {
           pending.set(req_id, { resolve, reject })
           setTimeout(() => {
-            if (pending.delete(req_id)) reject(new Error('WeCom did not answer the send'))
+            if (pending.delete(req_id)) reject(platformError('WeCom did not answer the send'))
           }, 15_000).unref?.()
         })
       }
@@ -149,7 +150,7 @@ export default {
             const held = pending.get(packet.headers?.req_id)
             if (held !== undefined) {
               pending.delete(packet.headers?.req_id)
-              held.reject(Object.assign(new Error(String(packet.errmsg ?? 'WeCom refused')), { permanent: true }))
+              held.reject(platformError(String(packet.errmsg ?? 'WeCom refused'), { permanent: true }))
             }
             return
           }
@@ -219,7 +220,7 @@ export default {
         generation += 1
         clearTimeout(reconnectTimer)
         clearTimeout(pingTimer)
-        for (const held of pending.values()) held.reject(new Error('stopped'))
+        for (const held of pending.values()) held.reject(platformError('stopped'))
         pending.clear()
         try { socket?.close(1000, 'stop') } catch { /* not open */ }
       },

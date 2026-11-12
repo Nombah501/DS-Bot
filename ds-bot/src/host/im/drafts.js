@@ -5,6 +5,7 @@
 // at its address, so a Draft is never shown after its own Step message.
 import { randomBytes } from 'node:crypto'
 import { addressKey } from './topics.js'
+import { classify, recoverMissingTopic } from './errors.js'
 
 // Local conservative policy; Telegram's numeric Draft rate limit is unverified.
 const DRAFT_MS = 1000
@@ -44,16 +45,15 @@ export function draftStream({ connOf, place, send, recover, warn }) {
       .catch(async caught => {
         let error = caught
         if (disposed) return
-        if (error?.topicMissing === true) {
-          try {
-            if (await recover(copy.chat) && !copy.ended && place.deliverable(connOf(), copy.chat, copy)) {
-              await send(copy.chat, { draftId: copy.draftId, text: copy.attempt.text })
-              return
-            }
-          } catch (recoveryError) { error = recoveryError }
-        }
+        try {
+          if (await recoverMissingTopic(error, copy.chat, recover) && !copy.ended && place.deliverable(connOf(), copy.chat, copy)) {
+            await send(copy.chat, { draftId: copy.draftId, text: copy.attempt.text })
+            return
+          }
+        } catch (recoveryError) { error = recoveryError }
         warn(String(error?.message ?? error))
-        if (Number(error?.retryAfter) > 0) held.lastAt = Date.now() + error.retryAfter * 1000
+        const { retryAfterMs } = classify(error)
+        if (retryAfterMs > 0) held.lastAt = Date.now() + retryAfterMs
       })
       .finally(() => {
         held.sending = undefined

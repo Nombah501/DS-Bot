@@ -24,7 +24,7 @@ async function fakeQq() {
       if (typeof answer === 'function') answer = answer(params)
       if (answer === undefined) answer = { result: { id: '900' } }
       if (answer.error) {
-        res.writeHead(answer.status ?? 400, { 'content-type': 'application/json' })
+        res.writeHead(answer.status ?? 400, { 'content-type': 'application/json', ...(answer.retryAfter !== undefined ? { 'retry-after': answer.retryAfter } : {}) })
         res.end(JSON.stringify({ code: answer.error, message: answer.message ?? 'refused' }))
         return
       }
@@ -212,4 +212,22 @@ test('a socket that cannot be built at the handshake is retried (#1119)', async 
   const ready = await until(() => statuses.slice(statuses.indexOf(failed) + 1).find(status => status.state === 'ready'), 120)
   assert.ok(ready !== undefined, 'the connection became ready after a new socket')
   assert.equal(fake.sockets.length, 1)
+})
+
+test('send errors retain HTTP policy, retry seconds and permanent quota refusals', async t => {
+  const fake = await fakeQq()
+  const handle = qq.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  await until(() => fake.sockets[0])
+  for (const [status, message, kind] of [[404, 'refused', 'permanent'], [429, 'limited', 'retry'], [429, 'quota', 'permanent'], [503, 'unavailable', 'retry']]) {
+    fake.replies['/v2/users/u1/messages'] = { error: 123, status, message, retryAfter: '2' }
+    await assert.rejects(handle.send({ key: 'u1', kind: 'direct' }, { text: 'hello' }), error => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.kind, kind)
+      assert.equal(error.status, status)
+      assert.equal(error.permanent, kind === 'permanent')
+      assert.equal(error.retryAfter, status === 429 ? 2 : undefined)
+      return true
+    })
+  }
 })

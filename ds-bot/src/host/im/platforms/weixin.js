@@ -9,6 +9,7 @@
 // from the CDN and decrypt with their AES key. A refused send is permanent
 // with the platform's reason. Protocol ported from dsh-im (MIT, see NOTICE).
 import { createDecipheriv, randomBytes } from 'node:crypto'
+import { platformError } from '../errors.js'
 
 const QR_BASE = 'https://ilinkai.weixin.qq.com/'
 const BOT_TYPE = '3'
@@ -48,8 +49,6 @@ const isUpdatesAnswer = answer => answer !== null && typeof answer === 'object'
 
 const logins = new Map() // loginId → { qrcode, baseUrl, expiresAt, result }
 
-const fail = (reason, opts = {}) => Object.assign(new Error(String(reason)), opts)
-
 export default {
   id: 'weixin',
 
@@ -61,7 +60,7 @@ export default {
       body: JSON.stringify({ local_token_list: [] }),
     })
     const body = await response.json().catch(() => ({}))
-    if (body.qrcode === undefined) throw fail(body.errmsg ?? 'WeChat did not return a code', { permanent: false })
+    if (body.qrcode === undefined) throw platformError(String(body.errmsg ?? 'WeChat did not return a code'), { permanent: false })
     const loginId = `wx_${randomBytes(8).toString('hex')}`
     const expiresAt = Date.now() + 5 * 60_000
     logins.set(loginId, { qrcode: String(body.qrcode), expiresAt })
@@ -100,9 +99,9 @@ export default {
   async check(fields, env) {
     const answer = await request(env, base(env, fields), fields.token, 'getupdates', { get_updates_buf: '', timeout_ms: 0 }, 8_000, { requireJson: true })
     if (answer.ret !== undefined) {
-      if (Number(answer.ret) !== 0) throw fail(`WeChat answered ${answer.ret}`, { permanent: true })
+      if (Number(answer.ret) !== 0) throw platformError(`WeChat answered ${answer.ret}`, { permanent: true })
     } else if (!isUpdatesAnswer(answer)) {
-      throw fail('WeChat answered an unreadable response')
+      throw platformError('WeChat answered an unreadable response')
     }
     return { account: { id: String(fields.ilinkBotId ?? ''), name: 'WeChat' } }
   },
@@ -254,7 +253,7 @@ export default {
             },
           })
           if (Number(answer.ret) !== 0 && answer.ret !== undefined) {
-            throw fail(`WeChat refused the reply (${answer.errmsg ?? answer.ret})`, { permanent: true })
+            throw platformError(`WeChat refused the reply (${answer.errmsg ?? answer.ret})`, { permanent: true })
           }
           messageId = clientId
         }
@@ -304,7 +303,7 @@ async function notifyStart(env, baseUrl, token) {
   const reason = Number(code) === SESSION_EXPIRED
     ? 'WeChat session expired; scan the QR code again'
     : `WeChat did not start the session (${code})`
-  throw fail(reason, { permanent: true })
+  throw platformError(reason, { permanent: true })
 }
 
 async function request(env, baseUrl, token, endpoint, body, timeoutMs = POLL_TIMEOUT_MS, { requireJson = false } = {}) {
@@ -329,7 +328,7 @@ async function request(env, baseUrl, token, endpoint, body, timeoutMs = POLL_TIM
     // fetch reports "fetch failed" and hides ENOTFOUND, ECONNRESET and the like in
     // cause; surface it in the message and keep the chain for diagnosis.
     const cause = error?.cause?.code ?? error?.cause?.message
-    throw Object.assign(new Error(timedOut ? 'timeout' : String(cause ?? error?.message ?? error), { cause: error }), { timeout: timedOut })
+    throw platformError(timedOut ? 'timeout' : String(cause ?? error?.message ?? error), { timeout: timedOut }, { cause: error })
   } finally {
     clearTimeout(timer)
   }
@@ -337,13 +336,13 @@ async function request(env, baseUrl, token, endpoint, body, timeoutMs = POLL_TIM
   let parsed
   try { parsed = text === '' ? {} : JSON.parse(text) } catch { parsed = undefined }
   const json = parsed !== null && typeof parsed === 'object' ? parsed : undefined
-  if (response.status === 429 || json?.ret === 429) throw fail('WeChat rate limited the request', { retryAfter: Number(response.headers.get('retry-after')) })
-  if (response.status === 401 || response.status === 403) throw fail('WeChat refused the token', { permanent: true })
-  if (!response.ok) throw fail(`WeChat answered ${response.status}`)
+  if (response.status === 429 || json?.ret === 429) throw platformError('WeChat rate limited the request', { retryAfter: Number(response.headers.get('retry-after')) })
+  if (response.status === 401 || response.status === 403) throw platformError('WeChat refused the token', { permanent: true })
+  if (!response.ok) throw platformError(`WeChat answered ${response.status}`)
   // A caller that reads fields from the answer (getupdates) needs a real JSON
   // object; anyone else keeps the old empty answer on a malformed body.
   if (json === undefined) {
-    if (requireJson) throw fail('WeChat answered an unreadable response', { status: response.status })
+    if (requireJson) throw platformError('WeChat answered an unreadable response', { status: response.status })
     return {}
   }
   return json
