@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { setTimeout as delay } from 'node:timers/promises'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { startBridge, until } from './telegram-bridge.js'
 
 const group = { id: -50, type: 'supergroup', title: 'Team' }
@@ -175,7 +176,11 @@ test('S1: a Private card whose group was rebound to another Bot never becomes pu
   const after = s.calls.length
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
   t.mock.timers.tick(5 * 60 * 1000)
-  // The fallback runs once a second; two runs have passed.
-  await delay(2200)
+  // The fallback records the public copy before queueing it.
+  const journal = async () => JSON.parse(await readFile(join(s.home, 'im', `${s.connection.id}.json`), 'utf8').catch(() => '{}'))
+  await until(async () => Object.values((await journal()).cards ?? {}).flat().some(entry => entry.chatKey === '-50' && entry.receiverUserId === undefined), 4000)
+  // A later reply in the same chat queue goes only after the public copy was sent or dropped.
+  s.message('@fakebot /start', { chat: group })
+  await s.request('sendMessage', p => p.chat_id === '-50', after)
   assert.equal(s.calls.slice(after).some(c => c.method === 'sendRichMessage' && c.params.chat_id === '-50' && !c.params.ephemeral_message_parameters), false)
 })
