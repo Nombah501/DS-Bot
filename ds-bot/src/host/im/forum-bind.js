@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { imPlatform } from '../../shared/im-platforms.js'
-import { accessTargets, addressKey } from './topics.js'
+import { accessTargets } from './topics.js'
 import { settledCard } from './cards.js'
 
 // Bind Cards belong to their requesting person and physical Topic, not the
 // Topic's current target: an unbound/inaccessible Topic must still be bindable.
-export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, textForPerson, may }) {
+export function forumBinder(rt, { handleOf, deliveryOf, sendText, sendCardReply, textForPerson, may }) {
   const nameOf = target => (target.botId === undefined ? rt.roomOf(target.roomId) : rt.botOf(target.botId))?.name
   const admin = async (conn, chat, sender, action) => {
     const handle = handleOf(conn.id)
@@ -39,7 +39,7 @@ export function forumBinder(rt, { handleOf, enqueue, sendText, sendCardReply, te
       saved.bindCards ??= {}
       saved.bindCards[key] = held
       await rt.save()
-      enqueue(conn, addressKey(msg.chat), { chat: msg.chat, card, after: async sent => {
+      void deliveryOf(conn.id)?.notice(msg.chat, { card }, { sent: async sent => {
         held.messageId = sent?.messageId
         held.cardFormat = sent?.cardFormat
         await rt.save()

@@ -3,7 +3,6 @@
 // restart neither sends a Card twice nor forgets an answer. One journal serves
 // every connection; what each Card kind means stays with its caller.
 import { imPlatform } from '../../shared/im-platforms.js'
-import { addressKey } from './topics.js'
 
 const PRIVATE_MS = 5 * 60 * 1000
 
@@ -18,7 +17,7 @@ export const settledCard = (card, answer, labels) => ({
  * @param {{of: (id: string) => Promise<{cards: object}>, peek: (id: string) => {cards: object}|undefined, save: (id: string) => void}} deps.store
  * @param {(conn: object) => (cardKey: string, entries: object[]) => boolean} deps.sourceOpen  whether the thing a Card asks about still waits
  */
-export function cardJournal({ store, connections, textForChat, textForPerson, handleOf, enqueue, paired, sourceOpen, warn, readOnly }) {
+export function cardJournal({ store, connections, textForChat, textForPerson, handleOf, deliveryOf, paired, sourceOpen, warn, readOnly }) {
   // Public copies of expired Private cards already queued, per adapter handle: a
   // restarted connection has a new handle and queues them again.
   const privateQueued = new WeakMap()
@@ -63,6 +62,7 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     }
     data.cards[cardKey] = entries
     store.save(id)
+    return held ?? entries[entries.length - 1]
   }
 
   // Sets the answer on every copy without editing: a second press already sees it.
@@ -167,9 +167,13 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
         const rendered = typeof body === 'function' ? body(text) : body
         const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
         const card = handle !== undefined && imPlatform(conn.platform)?.richCards === true ? structured?.(text) : undefined
-        await record(conn.id, cardKey, chat, undefined, rendered, card, undefined, copy)
-        enqueue(conn, addressKey(chat), { chat, target, output, text: rendered, buttons: renderedButtons, card, ...copy, after: async (sent) => {
-          await record(conn.id, cardKey, chat, sent?.messageId, rendered, card, sent?.cardFormat, { ...copy, ...(sent?.ephemeralMessageId === undefined ? {} : { ephemeralMessageId: sent.ephemeralMessageId, ephemeralMessageIds: sent.ephemeralMessageIds }) })
+        const entry = await record(conn.id, cardKey, chat, undefined, rendered, card, undefined, copy)
+        void deliveryOf(conn.id)?.output({ chat, target, output }, {
+          text: rendered, buttons: renderedButtons, card,
+          ...(privateCard ? { receiverUserId: copy.receiverUserId, privateUntil: copy.privateUntil } : {}),
+        }, { sent: async (sent, deliveredChat) => {
+          entry.threadId = deliveredChat.threadId
+          await record(conn.id, cardKey, deliveredChat, sent?.messageId, rendered, card, sent?.cardFormat, { ...copy, ...(sent?.ephemeralMessageId === undefined ? {} : { ephemeralMessageId: sent.ephemeralMessageId, ephemeralMessageIds: sent.ephemeralMessageIds }) })
           await edits(conn)
         } })
       }
@@ -231,7 +235,8 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
           if (publicCopy !== undefined && publicCopy.messageId === undefined && !queued.has(publicCopy)) {
             queued.add(publicCopy)
             const copy = publicCopy
-            enqueue(conn, addressKey(address), { chat: address, target: copy.target, output: copy.output, card: copy.card, after: async sent => {
+            void deliveryOf(conn.id)?.output({ chat: address, target: copy.target, output: copy.output }, { card: copy.card }, { sent: async (sent, deliveredChat) => {
+              copy.threadId = deliveredChat.threadId
               copy.messageId = sent?.messageId
               copy.cardFormat = sent?.cardFormat
               queued.delete(copy)

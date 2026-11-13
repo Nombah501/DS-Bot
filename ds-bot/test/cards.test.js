@@ -34,15 +34,15 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded 
     textForChat: () => key => `<${key}>`,
     textForPerson: () => key => `<${key}>`,
     handleOf: () => handle,
-    enqueue: (_conn, chatKey, job) => { queue.push({ chatKey, job }) },
+    deliveryOf: () => ({ output: (place, content, { sent }) => { queue.push({ place, job: { ...content, sent } }) } }),
     paired: (_conn, id) => conn.paired.some(person => person.id === id),
     sourceOpen: () => open,
     warn: () => {},
     readOnly: () => false,
   })
   const deliver = async (sent = {}) => {
-    const { job } = queue.shift()
-    await job.after({ messageId: nextId++, ...sent })
+    const { place, job } = queue.shift()
+    await job.sent({ messageId: nextId++, ...sent }, place.chat)
     return job
   }
   return { conn, data, calls, queue, cards, deliver, reveal: () => { loaded = true } }

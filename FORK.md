@@ -17,6 +17,10 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
 
+### Unreleased
+
+- **Queued delivery:** one per-runner Delivery module carries complete Placement places for Bot output and keeps Bridge notices separate. A failure while recording a successful send no longer retries the send; closing a runner prevents its queue from starting further sends or retries. Queues remain in memory and are discarded on reconnect, disable or shutdown.
+
 ### In 0.3.6-tb.1
 
 - **Upstream v0.3.6:** mobile app crash fixes and polish, Android APKs signed with v1, v2 and v3 schemes. No change to the plugin or the Bridge.
@@ -109,6 +113,7 @@ M	ds-bot/src/host/browser/script-runner.js
 M	ds-bot/src/host/channel.js
 M	ds-bot/src/host/groups.js
 A	ds-bot/src/host/im/cards.js
+A	ds-bot/src/host/im/delivery.js
 A	ds-bot/src/host/im/drafts.js
 A	ds-bot/src/host/im/errors.js
 M	ds-bot/src/host/im/format.js
@@ -132,6 +137,7 @@ M	ds-bot/test/browser-script-runner.test.js
 A	ds-bot/test/cards.test.js
 M	ds-bot/test/diagnostics.test.js
 A	ds-bot/test/drafts.test.js
+A	ds-bot/test/im-delivery.test.js
 M	ds-bot/test/im-dingtalk.test.js
 M	ds-bot/test/im-discord.test.js
 A	ds-bot/test/im-errors.test.js

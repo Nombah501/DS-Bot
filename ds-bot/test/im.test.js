@@ -771,7 +771,7 @@ test('a deleted Bot target gets the unbound reply', async (t) => {
   assert.equal(s.prompts.length, 0)
 })
 
-test('a permanent send error shows in the status and is not retried; a network error resends in order', async (t) => {
+test('a permanent send error shows in the status, is not retried, and reconnect starts a fresh adapter', async (t) => {
   const s = await start()
   t.after(s.stop)
   const conn = await add(s)
@@ -787,12 +787,9 @@ test('a permanent send error shows in the status and is not retried; a network e
   const before = s.fake.sent.length
   await s.flush()
   assert.equal(s.fake.sent.length, before, 'permanent failure is not retried')
-  s.fake.fails.push(Object.assign(new Error('network down'), {}))
-  s.emitEvent('a', 'assistant/message', { message: { content: [{ type: 'text', text: 'first' }] } })
-  s.emitEvent('a', 'assistant/message', { message: { content: [{ type: 'text', text: 'second' }] } })
-  await s.flush()
-  await delay(20)
+  const connects = s.fake.connects
   await s.rt.imEndpoint('im-retry', { id: conn.id })
+  assert.equal(s.fake.connects, connects + 1)
 })
 
 test('a weixin QR login creates the connection paired with the scanning owner', async (t) => {
