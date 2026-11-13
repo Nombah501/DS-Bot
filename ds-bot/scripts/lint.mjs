@@ -3,7 +3,7 @@
 // DSH_HARNESS, else dev/harness, else a checkout beside this checkout, else beside the main
 // worktree (a git worktree has no deepseek-harness of its own).
 // Usage: npm run lint [-- <oxlint options>]
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
@@ -22,15 +22,24 @@ if (!bin) {
   console.error('lint: no oxlint found; run npm run harness, or set DSH_HARNESS to a deepseek-harness checkout')
   process.exit(2)
 }
-// Keep the summary available even when oxlint detects an agent environment.
-const result = spawnSync(process.execPath, [bin, '-c', '.oxlintrc.json', ...process.argv.slice(2), '--format=default', `--max-warnings=${warningThreshold}`, 'index.js', 'web-search.js', 'src', 'dev', 'scripts', 'test'], { cwd: plugin, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
-if (result.stdout) process.stdout.write(result.stdout)
-if (result.stderr) process.stderr.write(result.stderr)
-if (result.error) console.error(`lint: ${result.error.message}`)
-const warnings = result.stdout?.match(/Found (\d+) warnings? and \d+ errors?\./)?.[1]
-if (warnings !== undefined) {
-  const count = Number(warnings)
-  if (count > warningThreshold) console.error(`lint: ${count} warnings exceed the stored threshold of ${warningThreshold}`)
-  else if (count < warningThreshold && result.status === 0) console.log(`lint: ${count} warnings are below the stored threshold of ${warningThreshold}; lower warningThreshold in scripts/lint.mjs to ${count} and commit it`)
-}
-process.exit(result.status ?? 1)
+const args = process.argv.slice(2)
+const explicitFormat = args.some(arg => /^(?:--format(?:=|$)|-f)/.test(arg))
+// Keep the summary available in agent environments unless a caller selects a formatter.
+const format = explicitFormat ? [] : ['--format=default']
+const result = spawn(process.execPath, [bin, '-c', '.oxlintrc.json', ...args, ...format, `--max-warnings=${warningThreshold}`, 'index.js', 'web-search.js', 'src', 'dev', 'scripts', 'test'], { cwd: plugin, stdio: ['inherit', 'pipe', 'inherit'] })
+result.stdout.pipe(process.stdout)
+let summary = ''
+if (!explicitFormat) result.stdout.on('data', data => {
+  // Only the final summary is needed after streaming diagnostics.
+  summary = (summary + data).slice(-1024)
+})
+result.on('error', error => console.error(`lint: ${error.message}`))
+result.on('close', status => {
+  const warnings = summary.match(/Found (\d+) warnings? and \d+ errors?\./)?.[1]
+  if (warnings !== undefined) {
+    const count = Number(warnings)
+    if (count > warningThreshold) console.error(`lint: ${count} warnings exceed the stored threshold of ${warningThreshold}`)
+    else if (count < warningThreshold && status === 0) console.log(`lint: ${count} warnings are below the stored threshold of ${warningThreshold}; lower warningThreshold in scripts/lint.mjs to ${count} and commit it`)
+  }
+  process.exitCode = status ?? 1
+})
