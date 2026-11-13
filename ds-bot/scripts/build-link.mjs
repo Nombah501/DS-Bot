@@ -16,6 +16,8 @@ const OUTPUT = join(PLUGIN, 'link.js')
 export async function bundleLink() {
   const result = await build({
     absWorkingDir: join(PLUGIN, '..', 'link'),
+    // Keep dependency paths local when a worktree shares node_modules.
+    preserveSymlinks: true,
     entryPoints: ['src/index.ts'],
     bundle: true,
     format: 'esm',
