@@ -1016,6 +1016,7 @@ export function install(rt) {
       // The greeting round leaves the user's messages for a round of their own.
       if (turns.size === 0 && !round.slots.some(slot => slot.status === 'waiting') && (round.kickoff || waitingLines(agent).length === 0)) break
     }
+    round.closed = true
     await Promise.allSettled([...turns])
     delete round.nudge
     // The admin was alone with the user's message and passed: the round ends with
@@ -1183,6 +1184,11 @@ export function install(rt) {
     const round = running.starting ? await running.ready : running
     if (round === undefined) {
       startRound(room, posts, await rt.resolveAgent(rt.sessionOfRoom(room)))
+      return
+    }
+    // Setup can finish after its empty scheduler has already decided to close.
+    if (round.closed) {
+      laterPosts.set(room.id, [...(laterPosts.get(room.id) ?? []), ...posts])
       return
     }
     const members = room.members.map(rt.botOf).filter(Boolean)
@@ -1625,7 +1631,9 @@ export function install(rt) {
   // once, and the members it calls start in that round, so it is not held back until
   // the round ends and never sits in the group Session's QueueDock (#663).
   async function postToRoom(room, sender, text, extra = {}, files = []) {
-    const running = [...rt.roomProgress.values()].find(round => round.roomId === room.id && round.nudge !== undefined)
+    // Stop/resume notices call nobody and still belong to the turns being drained.
+    const eventOnly = extra.stopped === true || extra.resumed === true
+    const running = [...rt.roomProgress.values()].find(round => round.roomId === room.id && round.nudge !== undefined && (!round.closed || eventOnly))
     if (running !== undefined) {
       if (extra.failed !== undefined) {
         // A failed model call is in the log already (noteFailure); the round names it.
