@@ -61,7 +61,7 @@ The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/ups
 
 After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.5-tb.2.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
 
-Upstream contributions: [our room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396), [typing PR #1192](https://github.com/Fei2411/DS-Bot/pull/1192), and [our Telegram/Russian proposals in Discussions](https://github.com/Fei2411/DS-Bot/discussions?discussions_q=author%3ANombah501). Discussion acceptance is not implied; fork-only features remain maintained here until upstream adopts them.
+Past upstream contributions: [room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396) and the Discussions [#1397](https://github.com/Fei2411/DS-Bot/discussions/1397), [#1398](https://github.com/Fei2411/DS-Bot/discussions/1398) and [#1399](https://github.com/Fei2411/DS-Bot/discussions/1399). Upstream accepts pull requests only from collaborators and has not answered these, so the fork no longer contributes upstream; its features and fixes are maintained here.
 
 ## Changes from upstream
 
