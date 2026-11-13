@@ -161,7 +161,8 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
         const handle = handleOf(conn.id)
         const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
           && handle !== undefined && imPlatform(conn.platform)?.privateCards === true
-        const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + PRIVATE_MS } : {}) }
+        // A Private card keeps its turn's `output`, so its later public copy is checked like any queued output.
+        const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + PRIVATE_MS, ...(output === undefined ? {} : { output }) } : {}) }
         const text = privateCard ? textForPerson(conn, initiator.sender) : textForChat(conn, chat.key)
         const rendered = typeof body === 'function' ? body(text) : body
         const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
@@ -223,14 +224,14 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
           if (address === undefined) continue
           let publicCopy = entries.find(copy => copy.chatKey === entry.chatKey && copy.threadId === entry.threadId && copy.receiverUserId === undefined)
           if (entry.answer === undefined && Date.now() >= entry.privateUntil && publicCopy === undefined) {
-            publicCopy = { chatKey: entry.chatKey, text: entry.text, card: structuredClone(entry.card), threadId: entry.threadId, target: entry.target }
+            publicCopy = { chatKey: entry.chatKey, text: entry.text, card: structuredClone(entry.card), threadId: entry.threadId, target: entry.target, ...(entry.output === undefined ? {} : { output: entry.output }) }
             entries.push(publicCopy)
             store.save(conn.id)
           }
           if (publicCopy !== undefined && publicCopy.messageId === undefined && !queued.has(publicCopy)) {
             queued.add(publicCopy)
             const copy = publicCopy
-            enqueue(conn, addressKey(address), { chat: address, card: copy.card, after: async sent => {
+            enqueue(conn, addressKey(address), { chat: address, target: copy.target, output: copy.output, card: copy.card, after: async sent => {
               copy.messageId = sent?.messageId
               copy.cardFormat = sent?.cardFormat
               queued.delete(copy)

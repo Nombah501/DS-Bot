@@ -196,18 +196,41 @@ for (const place of ['forum', 'private']) test(`S1: secret and view Cards follow
   assert.equal(s.calls.slice(after).filter(call => call.method === 'sendMessage' && /ORIGIN_KEY|Origin view/.test(call.params.text)).length, 2)
 })
 
-test('S1: a Step message waiting for a retry is dropped once its turn moved to another Origin', async t => {
-  const s = await setup(t)
-  await begin(s, { chat: forum, message_thread_id: 40 })
+const refuseOnce = (s, text) => {
   let refused = 0
-  s.replies.sendRichMessage = params => params.rich_message.html.includes('Queued step') && refused++ === 0
+  s.replies.sendRichMessage = params => params.rich_message.html.includes(text) && refused++ === 0
     ? { ok: false, error_code: 429, description: 'Too Many Requests: retry after 0.3', parameters: { retry_after: 0.3 } }
     : { ok: true, result: { message_id: 900, chat: { id: params.chat_id } } }
+}
+
+test('S1: a Step message waiting for a retry is dropped once its Origin is unbound', async t => {
+  const s = await setup(t)
+  await begin(s, { chat: forum, message_thread_id: 40 })
+  refuseOnce(s, 'Queued step')
+  const after = s.calls.length
+  s.step('Queued step')
+  await s.request('sendRichMessage', p => p.rich_message.html.includes('Queued step'), after)
+  await s.rt.imEndpoint('im-chat', { id: s.connection.id, chatKey: '-60', remove: true })
+  await delay(800)
+  assert.deepEqual(outputs(s, after, 'Queued step'), [['-60', 40]], 'only the refused attempt, no retry')
+})
+
+for (const place of ['forum', 'private']) test(`S1: a ${place}-origin Step message retried after its turn ended still reaches its Origin`, async t => {
+  const s = await setup(t)
+  // "Only Cards" drops autonomous Step messages, so a lost Origin would drop this one.
+  if (place === 'private') {
+    await s.rt.imEndpoint('im-update', { id: s.connection.id, nonTelegramTurns: 'cards' })
+    await s.restart()
+  }
+  await begin(s, place === 'forum' ? { chat: forum, message_thread_id: 40 } : { message_thread_id: 101 })
+  refuseOnce(s, 'Queued step')
   const after = s.calls.length
   s.step('Queued step')
   await s.request('sendRichMessage', p => p.rich_message.html.includes('Queued step'), after)
   s.sessionEvent('turn/end', { turn: 1 })
-  await begin(s, { message_thread_id: 101 }, 2)
-  await delay(800)
-  assert.deepEqual(outputs(s, after, 'Queued step'), [['-60', 40]], 'only the refused attempt, no retry')
+  if (place === 'forum') await begin(s, { message_thread_id: 101 }, 2)
+  const expected = place === 'forum' ? ['-60', 40] : ['5', 101]
+  await until(() => outputs(s, after, 'Queued step').length === 2, 3000)
+  await delay(80)
+  assert.deepEqual(outputs(s, after, 'Queued step'), [expected, expected], 'the refused attempt and one retry')
 })

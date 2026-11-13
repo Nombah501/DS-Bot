@@ -131,16 +131,18 @@ test('Placement: DS Bot group chat lines go to every binding of the group, whate
   assert.deepEqual(addresses(s.place.places(conn, { roomId: 'r' }, 'r', 'message')), [['-60', 41], ['g', undefined]])
 })
 
-test('Placement: output queued for the old Origin may not go once the turn moved to a new Origin', async () => {
+test('Placement: queued output keeps its own turn\'s Origin after that turn ends, until the Origin is unbound', async () => {
   const conn = telegram()
   const s = setup([conn])
   await turnFrom(s, conn, { key: '5', kind: 'direct', threadId: 101 })
   const [queued] = s.place.places(conn, { botId: 'a' }, 'a', 'message')
-  assert.equal(s.place.deliverable(conn, queued.chat, queued), true)
+  conn.nonTelegramTurns = 'cards'
   s.place.sessionEvent({ id: 'a' }, { type: 'turn/end', data: { turn: 1 } })
   await s.place.asked(conn, 'im:telegram:2', { id: '9', name: 'Ann' }, { key: '-60', kind: 'group', threadId: 40 })
   s.place.sessionEvent({ id: 'a' }, { type: 'turn/start', data: { turn: 2 } })
   s.place.sessionEvent({ id: 'a' }, { type: 'user/message', data: { source: { rpcId: 'im:telegram:2' } } })
+  assert.equal(s.place.deliverable(conn, queued.chat, queued), true, 'a later turn elsewhere does not move it')
+  conn.chats['5'].topics[101].closed = true
   assert.equal(s.place.deliverable(conn, queued.chat, queued), false)
 })
 

@@ -95,10 +95,10 @@ export function placement({ connections, store, botOf, roomOf }) {
 
   // A Bot turn has one Telegram Origin across every connection. A revoked Origin
   // makes it an Off-Telegram turn, never a broadcast to other group bindings.
-  const botPlaces = (conn, botId, sessionId, cards) => {
+  // `initiator` is the turn's record, taken when its output was placed.
+  const botPlaces = (conn, botId, initiator, cards) => {
     const targets = listeners(conn, { botId })
     if (!topicMode(conn)) return targets
-    const initiator = initiatorAnywhere(sessionId)
     const originConn = connections()[initiator?.connectionId]
     if (originConn?.enabled !== false && topicMode(originConn)) {
       const saved = originConn.chats?.[initiator.chatKey]
@@ -115,9 +115,11 @@ export function placement({ connections, store, botOf, roomOf }) {
     return targets.filter(({ chat }) => chat.kind === 'direct' && allows(personOf(conn, chat.personId), { botId }))
   }
 
-  const placesOf = (conn, owner, sessionId, kind) => {
-    const out = owner.roomId === undefined ? botPlaces(conn, owner.botId, sessionId, kind === 'card') : listeners(conn, owner)
-    const output = { owner, sessionId, kind }
+  // `output.initiator` keeps the producing turn's Origin, so a queued item is checked
+  // against that turn even after it ended or the session started another one.
+  const placesOf = (conn, output) => {
+    const { owner, kind } = output
+    const out = owner.roomId === undefined ? botPlaces(conn, owner.botId, output.initiator, kind === 'card') : listeners(conn, owner)
     return (kind === 'draft' ? out.filter(place => place.chat.kind === 'direct') : out).map(place => ({ ...place, output }))
   }
 
@@ -129,7 +131,8 @@ export function placement({ connections, store, botOf, roomOf }) {
      * carries its `output`, so a queued place can be rechecked with `deliverable`.
      */
     places(conn, owner, sessionId, kind) {
-      return placesOf(fresh(conn), owner, sessionId, kind)
+      const initiator = owner.roomId === undefined ? initiatorAnywhere(sessionId) : undefined
+      return placesOf(fresh(conn), { owner, sessionId, kind, ...(initiator === undefined ? {} : { initiator }) })
     },
     /** The Bot or DS Bot group chat an address leads to, if it still exists. */
     targetOf(conn, address) {
@@ -148,7 +151,7 @@ export function placement({ connections, store, botOf, roomOf }) {
       const current = fresh(conn)
       if (!topicMode(current)) return true
       if (!bound(current, address, target)) return false
-      return output === undefined || placesOf(current, output.owner, output.sessionId, output.kind)
+      return output === undefined || placesOf(current, output)
         .some(place => addressKey(place.chat) === addressKey(address))
     },
     /** Moves a queued address onto the Topic that replaced its own, in place. */

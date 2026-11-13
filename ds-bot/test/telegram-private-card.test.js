@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { startBridge, until } from './telegram-bridge.js'
 
 const group = { id: -50, type: 'supergroup', title: 'Team' }
@@ -158,4 +159,23 @@ test('S1: an undelivered Private card still becomes public at its deadline', asy
   press(s, sent, 9, { message_id: 702, ephemeral_message_id: undefined, receiver_user: undefined })
   assert.deepEqual(await outcome, ['allowed-once'])
   assert.equal(s.calls.some(c => c.method === 'deleteEphemeralMessage'), false)
+})
+
+test('S1: a Private card whose group was rebound to another Bot never becomes public there', async t => {
+  const s = await startBridge(t, { seed: {
+    version: 1, mainBotIds: ['a'],
+    bots: { a: { id: 'a', name: 'Chief', role: 'Boss', sessionId: 'a', createdAt: 1 }, b: { id: 'b', name: 'Other', role: 'Helper', sessionId: 'b', createdAt: 2 } },
+    rooms: {}, agents: {}, exchanges: [], exchangeTurns: {}, questions: {}, prefs: {}, revision: 0,
+  } })
+  ephemeral(s)
+  await startGroupTurn(s)
+  void approve(t, s)
+  await s.request('sendRichMessage', p => p.chat_id === '-50' && p.ephemeral_message_parameters)
+  await s.rt.imEndpoint('im-chat', { id: s.connection.id, chatKey: '-50', target: { botId: 'b' } })
+  const after = s.calls.length
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  t.mock.timers.tick(5 * 60 * 1000)
+  // The fallback runs once a second; two runs have passed.
+  await delay(2200)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendRichMessage' && c.params.chat_id === '-50' && !c.params.ephemeral_message_parameters), false)
 })
