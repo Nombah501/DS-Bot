@@ -1,6 +1,6 @@
 # Telegram Bridge fork
 
-This is [Nombah501/DS-Bot](https://github.com/Nombah501/DS-Bot/tree/telegram-bridge), an Apache-2.0 fork of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot). It keeps DS Bot's long-lived Bots and DSH plugin architecture and extends Telegram as a remote control, not a conversation mirror. The plugin release is **0.3.5-tb.1**; desktop and mobile installers are not fork release artifacts.
+This is [Nombah501/DS-Bot](https://github.com/Nombah501/DS-Bot/tree/telegram-bridge), an Apache-2.0 fork of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot). It keeps DS Bot's long-lived Bots and DSH plugin architecture and extends Telegram as a remote control, not a conversation mirror. The plugin release is **0.3.5-tb.2**; desktop and mobile installers are not fork release artifacts.
 
 ## What's new
 
@@ -17,15 +17,23 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
 
+### In 0.3.5-tb.2
+
+- **Queued output follows its own turn:** a Step message or Card waiting for a Telegram retry goes only where its turn started, even after the turn ended or a new turn began elsewhere. It is dropped if that place was unbound or its Access list revoked meanwhile. The public copy of a Private card is checked the same way.
+- **Card answers keep the chosen button:** answering a Card while other state was being saved no longer loses the selected labels.
+- **Every Bridge notice in every supported language:** zh-TW, ja, ko, es, fr and de get the full set of notices; `/lang auto` follows the person's Telegram language.
+- **Fixes:** concurrent writes of the IM runtime file no longer collide; a message that joins an empty DS Bot group chat round while it closes is kept for the next round.
+- **Internals:** Placement, Draft stream, Card journal, status view, Telegram adapter rules, platform capabilities and the platform error contract each live in one module. Behaviour is unchanged apart from the items above.
+
 ## Install into a DSH profile
 
-Download the plugin tarball from [release v0.3.5-tb.1](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.5-tb.1), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
+Download the plugin tarball from [release v0.3.5-tb.2](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.5-tb.2), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
 
 Run these yourself in a download directory (stop the running DSH instance before replacing its plugin):
 
 ```sh
-gh release download v0.3.5-tb.1 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.5-tb.1.tgz'
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.5-tb.1.tgz"
+gh release download v0.3.5-tb.2 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.5-tb.2.tgz'
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.5-tb.2.tgz"
 npx @deepseek-ai/dsh@0.2.2-rc.1 web
 ```
 
@@ -51,7 +59,7 @@ The publisher splits the current committed branch at `ds-bot/`, fetches only the
 
 The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/upstream-watch.yml) checks stable releases daily at 06:23 UTC and on manual dispatch. A [“Sync with upstream vX.Y.Z” issue](https://github.com/Nombah501/DS-Bot/issues?q=is%3Aissue+%22Sync+with+upstream%22), with release notes and a tag comparison, is the signal to follow the sync runbook. Existing open or closed issues suppress duplicates. It needs only the built-in `GITHUB_TOKEN`, never merges or publishes, and never changes `.upstream-release`.
 
-After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.5-tb.1.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
+After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.5-tb.2.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
 
 Upstream contributions: [our room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396), [typing PR #1192](https://github.com/Fei2411/DS-Bot/pull/1192), and [our Telegram/Russian proposals in Discussions](https://github.com/Fei2411/DS-Bot/discussions?discussions_q=author%3ANombah501). Discussion acceptance is not implied; fork-only features remain maintained here until upstream adopts them.
 
@@ -77,9 +85,13 @@ A	FORK.md
 M	README.md
 M	app/package-lock.json
 M	app/package.json
+M	docs/plans/2026-11-04-im.md
 M	ds-bot/client.js
 M	ds-bot/package-lock.json
 M	ds-bot/package.json
+M	ds-bot/scripts/build-client.mjs
+M	ds-bot/scripts/build-link.mjs
+M	ds-bot/scripts/lint.mjs
 M	ds-bot/src/client/i18n.js
 A	ds-bot/src/client/im-access.js
 M	ds-bot/src/client/im-page.js
@@ -91,21 +103,50 @@ M	ds-bot/src/client/locales/ko.js
 M	ds-bot/src/client/team-actions.js
 M	ds-bot/src/host/browser/script-runner.js
 M	ds-bot/src/host/channel.js
+M	ds-bot/src/host/groups.js
+A	ds-bot/src/host/im/cards.js
+A	ds-bot/src/host/im/drafts.js
+A	ds-bot/src/host/im/errors.js
 M	ds-bot/src/host/im/format.js
 A	ds-bot/src/host/im/forum-bind.js
 M	ds-bot/src/host/im/index.js
+A	ds-bot/src/host/im/locale.js
+A	ds-bot/src/host/im/placement.js
+M	ds-bot/src/host/im/platforms/dingtalk.js
+M	ds-bot/src/host/im/platforms/discord.js
+M	ds-bot/src/host/im/platforms/feishu.js
+M	ds-bot/src/host/im/platforms/qq.js
+M	ds-bot/src/host/im/platforms/slack.js
 M	ds-bot/src/host/im/platforms/telegram.js
+M	ds-bot/src/host/im/platforms/wecom.js
+M	ds-bot/src/host/im/platforms/weixin.js
 A	ds-bot/src/host/im/rich-format.js
 A	ds-bot/src/host/im/status-panel.js
 A	ds-bot/src/host/im/topics.js
 M	ds-bot/src/shared/im-platforms.js
 M	ds-bot/test/browser-script-runner.test.js
+A	ds-bot/test/cards.test.js
 M	ds-bot/test/diagnostics.test.js
+A	ds-bot/test/drafts.test.js
+M	ds-bot/test/im-dingtalk.test.js
+M	ds-bot/test/im-discord.test.js
+A	ds-bot/test/im-errors.test.js
+M	ds-bot/test/im-feishu.test.js
 A	ds-bot/test/im-origin-settings.test.js
+A	ds-bot/test/im-platforms.test.js
+M	ds-bot/test/im-qq.test.js
+M	ds-bot/test/im-slack.test.js
 M	ds-bot/test/im-telegram.test.js
+M	ds-bot/test/im-wecom.test.js
+M	ds-bot/test/im-weixin.test.js
 M	ds-bot/test/im.test.js
 M	ds-bot/test/install.test.js
+A	ds-bot/test/locale.test.js
+A	ds-bot/test/placement-fixture.js
+A	ds-bot/test/placement.test.js
 M	ds-bot/test/room-races.test.js
+M	ds-bot/test/rounds.test.js
+A	ds-bot/test/status-panel.test.js
 A	ds-bot/test/telegram-bridge.js
 A	ds-bot/test/telegram-bridge.test.js
 A	ds-bot/test/telegram-cards.test.js
@@ -119,6 +160,7 @@ A	ds-bot/test/telegram-person-language.test.js
 A	ds-bot/test/telegram-press-toasts.test.js
 A	ds-bot/test/telegram-private-card.test.js
 A	ds-bot/test/telegram-rich.test.js
+A	ds-bot/test/telegram-settle-race.test.js
 A	ds-bot/test/telegram-status.test.js
 A	ds-bot/test/telegram-topic-lifecycle.test.js
 A	ds-bot/test/telegram-topics.test.js
