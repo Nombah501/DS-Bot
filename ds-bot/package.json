@@ -45,6 +45,7 @@
   "scripts": {
     "build": "node scripts/build-client.mjs && node scripts/build-link.mjs",
     "test": "node --import ./test/harness-resolve.mjs --test --test-timeout=120000 --test-force-exit \"test/*.test.js\"",
+    "test:im": "node --import ./test/harness-resolve.mjs --test --test-timeout=120000 --test-force-exit \"test/im*.test.js\" \"test/telegram-*.test.js\" \"test/cards.test.js\" \"test/placement.test.js\" \"test/drafts.test.js\" \"test/status-panel.test.js\" \"test/locale.test.js\"",
     "lint": "node scripts/lint.mjs",
     "harness": "npm install --prefix dev/harness --legacy-peer-deps=false --no-package-lock --no-fund --no-audit",
     "check": "sh dev/check.sh"
