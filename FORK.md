@@ -1,6 +1,6 @@
 # Telegram Bridge fork
 
-This is [Nombah501/DS-Bot](https://github.com/Nombah501/DS-Bot/tree/telegram-bridge), an Apache-2.0 fork of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot). It keeps DS Bot's long-lived Bots and DSH plugin architecture and extends Telegram as a remote control, not a conversation mirror. The plugin release is **0.3.5-tb.2**; desktop and mobile installers are not fork release artifacts.
+This is [Nombah501/DS-Bot](https://github.com/Nombah501/DS-Bot/tree/telegram-bridge), an Apache-2.0 fork of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot). It keeps DS Bot's long-lived Bots and DSH plugin architecture and extends Telegram as a remote control, not a conversation mirror. The plugin release is **0.3.6-tb.1**; desktop and mobile installers are not fork release artifacts.
 
 ## What's new
 
@@ -17,6 +17,10 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
 
+### In 0.3.6-tb.1
+
+- **Upstream v0.3.6:** mobile app crash fixes and polish, Android APKs signed with v1, v2 and v3 schemes. No change to the plugin or the Bridge.
+
 ### In 0.3.5-tb.2
 
 - **Queued output follows its own turn:** a Step message or Card waiting for a Telegram retry goes only where its turn started, even after the turn ended or a new turn began elsewhere. It is dropped if that place was unbound or its Access list revoked meanwhile. The public copy of a Private card is checked the same way.
@@ -27,13 +31,13 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 
 ## Install into a DSH profile
 
-Download the plugin tarball from [release v0.3.5-tb.2](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.5-tb.2), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
+Download the plugin tarball from [release v0.3.6-tb.1](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.1), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
 
 Run these yourself in a download directory (stop the running DSH instance before replacing its plugin):
 
 ```sh
-gh release download v0.3.5-tb.2 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.5-tb.2.tgz'
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.5-tb.2.tgz"
+gh release download v0.3.6-tb.1 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.1.tgz'
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.1.tgz"
 npx @deepseek-ai/dsh@0.2.2-rc.1 web
 ```
 
@@ -41,7 +45,7 @@ Enable/configure the plugin in that profile and pair Telegram in its Bridge sett
 
 ## Upstream tracking and publishing
 
-Base: [upstream v0.3.5](https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.5), commit `405ee8bbf5c6cbe805340c1dc69186863bfb5939`, recorded in [`.upstream-release`](.upstream-release). The fork's default branch is `telegram-bridge`; `main` remains an upstream copy for future contributions, never a target for our subtree publisher.
+Base: [upstream v0.3.6](https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.6), commit `a66cc737cfb6c3d8a2597e748cded6cab1206dd3`, recorded in [`.upstream-release`](.upstream-release). The fork's default branch is `telegram-bridge`; `main` remains an upstream copy for future contributions, never a target for our subtree publisher.
 
 Development lives in the `ds-bot/` subtree of [DSH-Plugins](https://github.com/Nombah501/DSH-Plugins). Sync upstream into that subtree with full history, preserve Telegram-only capability gates and regenerate generated bundles rather than editing them. Follow the integration repository's `docs/runbooks/sync-upstream.md`. Install plugin/harness dependencies and the new `link/` dependencies before building. Fork versions are `<upstream version>-tb.<N>`: increment N for each publication, reset it for a new upstream base.
 
@@ -59,7 +63,7 @@ The publisher splits the current committed branch at `ds-bot/`, fetches only the
 
 The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/upstream-watch.yml) checks stable releases daily at 06:23 UTC and on manual dispatch. A [“Sync with upstream vX.Y.Z” issue](https://github.com/Nombah501/DS-Bot/issues?q=is%3Aissue+%22Sync+with+upstream%22), with release notes and a tag comparison, is the signal to follow the sync runbook. Existing open or closed issues suppress duplicates. It needs only the built-in `GITHUB_TOKEN`, never merges or publishes, and never changes `.upstream-release`.
 
-After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.5-tb.2.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
+After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.6-tb.1.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
 
 Past upstream contributions: [room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396) and the Discussions [#1397](https://github.com/Fei2411/DS-Bot/discussions/1397), [#1398](https://github.com/Fei2411/DS-Bot/discussions/1398) and [#1399](https://github.com/Fei2411/DS-Bot/discussions/1399). Upstream accepts pull requests only from collaborators and has not answered these, so the fork no longer contributes upstream; its features and fixes are maintained here.
 
@@ -71,10 +75,10 @@ To regenerate the exact list after committing changes, run from DSH-Plugins and 
 
 ```sh
 split=$(git subtree split --quiet --prefix=ds-bot HEAD)
-git diff --name-status --no-renames 405ee8bbf5c6cbe805340c1dc69186863bfb5939 "$split"
+git diff --name-status --no-renames a66cc737cfb6c3d8a2597e748cded6cab1206dd3 "$split"
 ```
 
-In the published DS-Bot checkout the equivalent command is `git diff --name-status --no-renames 405ee8bbf5c6cbe805340c1dc69186863bfb5939 HEAD`. Do not compare upstream's root against the unsplit outer repository: upstream `ds-bot/` is outer `ds-bot/ds-bot/`. On an upstream sync, update both the base SHA and this inventory.
+In the published DS-Bot checkout the equivalent command is `git diff --name-status --no-renames a66cc737cfb6c3d8a2597e748cded6cab1206dd3 HEAD`. Do not compare upstream's root against the unsplit outer repository: upstream `ds-bot/` is outer `ds-bot/ds-bot/`. On an upstream sync, update both the base SHA and this inventory.
 
 <!-- upstream-changes:start -->
 ```text
