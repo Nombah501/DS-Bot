@@ -1287,6 +1287,91 @@ test('the idle guard reads status posts and not ordinary work', () => {
   for (const text of work) assert.equal(isIdleRelayText(text, everyone, []), false, `should not count: ${text}`)
 })
 
+for (const author of ['user', 'Bot']) test(`a ${author} message arriving while a paused status round starts still calls its member`, async (t) => {
+  const { call, emit, userMessage, relay, answer, stop, sent, rt } = start()
+  let release
+  t.after(async () => {
+    release?.()
+    await stop()
+  })
+  const room = await team(call, sent)
+  const chief = rt.state.mainBotIds[0]
+  rt.state.rooms[room.id].idleRelays = ROOM_IDLE_RELAY_LIMIT
+  rt.state.rooms[room.id].idlePaused = { from: chief, count: ROOM_IDLE_RELAY_LIMIT, noticed: true }
+  await rt.teamTools.find(d => d.name === 'post_to_group').execute({ group: 'R1', message: '暂无待办' }, { agent: { id: rt.chatOf(chief) } })
+  const post = sent.find(entry => entry.sessionId === room.id && entry.message.source.role === 'post')
+  await emit(room.id, { type: 'user/message', data: { source: post.message.source, content: post.message.content } })
+
+  // Hold the status round's initial save so the next relay must wait for its setup.
+  const save = rt.save
+  let markStarting
+  const starting = new Promise(resolve => { markStarting = resolve })
+  const gate = new Promise(resolve => { release = resolve })
+  rt.save = async () => {
+    rt.save = save
+    markStarting()
+    await gate
+    await save()
+  }
+  const quiet = relay(room.id, 'quiet')
+  await starting
+  if (author === 'user') await emit(room.id, userMessage('@Writer 继续'))
+  else {
+    await rt.teamTools.find(d => d.name === 'post_to_group').execute({ group: 'R1', message: '@Writer 继续核对日志' }, { agent: { id: rt.chatOf(chief) } })
+    const next = sent.findLast(entry => entry.sessionId === room.id && entry.message.source.role === 'post')
+    await emit(room.id, { type: 'user/message', data: { source: next.message.source, content: next.message.content } })
+  }
+  const resumed = relay(room.id, 'resumed')
+  // Both relay calls await this same loaded promise; let the second enter first.
+  await rt.load()
+  release()
+
+  const turn = await turnFor(sent)
+  assert.ok(turn, `the ${author}'s message opens a round again`)
+  await answer(turn.sessionId, turn.message.source.exchangeId, '继续核对', 1)
+  await Promise.all([quiet, resumed])
+  if (author === 'user') assert.equal(rt.state.rooms[room.id].idlePaused, undefined)
+})
+
+test('a Bot post after an empty scheduler closes reaches the next round', async (t) => {
+  const { call, emit, relay, answer, stop, sent, rt } = start()
+  let release
+  t.after(async () => {
+    release?.()
+    await stop()
+  })
+  const room = await team(call, sent)
+  const chief = rt.state.mainBotIds[0]
+  rt.state.rooms[room.id].idlePaused = { from: chief, count: ROOM_IDLE_RELAY_LIMIT, noticed: true }
+  // A paused status post leaves the scheduler with no speakers.
+  await emit(room.id, { type: 'user/message', data: { source: { kind: 'bot', role: 'post', senderSessionId: chief }, content: [{ type: 'text', text: '暂无待办' }] } })
+  const save = rt.save
+  let markStarting
+  const starting = new Promise(resolve => { markStarting = resolve })
+  const gate = new Promise(resolve => { release = resolve })
+  rt.save = async () => {
+    rt.save = save
+    markStarting()
+    await gate
+    await save()
+  }
+  const quiet = relay(room.id, 'quiet')
+  await starting
+  const holder = [...rt.roomProgress.values()].find(round => round.roomId === room.id)
+  // ready's callbacks run after the empty scheduler has synchronously closed.
+  const posted = holder.ready.then(() => rt.postToRoom(rt.state.rooms[room.id], rt.botOf(chief), '@Writer 核对日志'))
+  release()
+  await posted
+  const post = sent.find(entry => entry.sessionId === room.id && entry.message.source.role === 'post')
+  assert.ok(post, 'the closing round leaves the Bot post in the group Session')
+  await emit(room.id, { type: 'user/message', data: { source: post.message.source, content: post.message.content } })
+  const resumed = relay(room.id, 'resumed')
+  const turn = await turnFor(sent)
+  assert.ok(turn, 'the Bot post calls its member in the next round')
+  await answer(turn.sessionId, turn.message.source.exchangeId, '已核对', 1)
+  await Promise.all([quiet, resumed])
+})
+
 // #853: the pause is kept with the group, so a restart does not start the status rounds
 // again before the user writes.
 test('the idle pause survives a restart and the user lifts it', async (t) => {
