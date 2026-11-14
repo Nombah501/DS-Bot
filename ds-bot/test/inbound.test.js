@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { inbound } from '../src/host/im/inbound.js'
 import { chatRecords } from '../src/host/im/chat-record.js'
 import { showStatus } from '../src/host/im/status-panel.js'
+import { allows } from '../src/host/im/topics.js'
 
 const sender = { id: 'ann', name: 'Ann', languageCode: 'en' }
 const direct = { key: 'dm', kind: 'direct', title: 'Ann’s chat' }
@@ -10,7 +11,7 @@ const forum = { key: 'forum', kind: 'group', title: 'Operations', isForum: true,
 const text = (key, values) => `<${key}${values === undefined ? '' : `:${JSON.stringify(values)}`}>`
 const bench = ({ capabilities = { topics: true, personLanguage: true }, onSave, uploadFile, onAsked, number = async () => false } = {}) => {
   let conn = {
-    id: 'one', platform: 'test', botId: 'a', paired: [{ ...sender, access: true }], requests: [],
+    id: 'one', platform: 'test', botId: 'a', paired: [{ ...sender, access: 'all' }], requests: [],
     chats: { forum: { kind: 'group', isForum: true, topics: { 7: { target: { botId: 'a' } } } } },
   }
   const saved = []
@@ -35,7 +36,7 @@ const bench = ({ capabilities = { topics: true, personLanguage: true }, onSave, 
     targetOf: (current, chat) => chat.threadId === undefined
       ? current.chats[chat.key]?.target ?? (chat.kind === 'direct' && current.botId ? { botId: current.botId } : undefined)
       : current.chats[chat.key]?.topics?.[chat.threadId]?.target,
-    may: (current, id) => capabilities.topics !== true || current.paired.some(person => person.id === id && person.access),
+    may: (current, id, target) => capabilities.topics !== true || allows(current.paired.find(person => person.id === id), target),
     asked: async (_conn, id, person, chat) => { origins.set(id, { person, chat }); await onAsked?.(b) },
     unasked: async (_conn, id) => { origins.delete(id) },
   }
@@ -49,7 +50,7 @@ const bench = ({ capabilities = { topics: true, personLanguage: true }, onSave, 
     }),
     showStatus: (_conn, msg, target, text) => showStatus(rt, {
       chat: msg.chat, target, text, richCards: false,
-      sendText: body => { outputs.push({ place: { chat: msg.chat, target }, text: body }) },
+      sendText: (...args) => { outputs.push({ place: { chat: msg.chat, target }, text: args[0], args }) },
     }),
     textForPerson: () => text,
     targetName: (_conn, target) => rt.botOf(target.botId)?.name ?? rt.roomOf(target.roomId)?.name,
@@ -66,23 +67,23 @@ const bench = ({ capabilities = { topics: true, personLanguage: true }, onSave, 
   return b
 }
 
-test('Inbound: /status without Topics sends a Status snapshot, not a Bot message', async () => {
+test('Inbound: /status without Topics sends a Status snapshot and does not reach the Bot', async () => {
   const b = bench({ capabilities: {} })
   await b.message('/status')
   assert.equal(b.sent.length, 0, '/status must not reach the Bot on a non-Topics platform')
-  assert.match(b.outputs[0].text, /Chief — <statusIdle>/)
-  assert.equal(b.outputs[0].buttons, undefined)
+  assert.deepEqual(b.outputs[0].args, ['Chief — <statusIdle>\n<statusTool>: —\n<statusStep>: 0\n<statusElapsed>: 0 s'])
 })
 
-for (const change of ['Access narrowed', 'target rebound']) {
+for (const change of ['Access narrowed', 'target rebound', 'target disappears']) {
   test(`Inbound: ${change} during a file upload refuses delivery to the old Bot`, async () => {
     const b = bench({ uploadFile: b => b.adopt(conn => {
-      if (change === 'Access narrowed') conn.paired[0].access = false
-      else conn.chats.forum.topics[7].target = { botId: 'b' }
+      if (change === 'Access narrowed') conn.paired[0].access = { botIds: [], roomIds: [] }
+      if (change === 'target rebound') conn.chats.forum.topics[7].target = { botId: 'b' }
+      if (change === 'target disappears') delete conn.chats.forum.topics[7]
     }) })
     await b.message('document', { chat: forum, files: [{ name: 'report.txt', data: 'report' }] })
     assert.equal(b.sent.length, 0, `${change} during upload must not deliver to the old Bot`)
-    assert.equal(b.notices.at(-1).text, '<denied>')
+    assert.equal(b.notices.at(-1).text, change === 'target disappears' ? '<bindHint>' : '<denied>')
     assert.equal(b.uploads.length, 1)
     assert.equal(b.origins.size, 0)
   })
@@ -126,7 +127,7 @@ test('Inbound: non-commands and commands with unsupported arguments still reach 
 
 test('Inbound: /lang accepts only the existing language arguments and runs before Access', async () => {
   const b = bench()
-  b.current().paired[0].access = false
+  b.current().paired[0].access = { botIds: [], roomIds: [] }
   for (const body of ['/lang', '/lang xx', '/lang ru extra']) {
     await b.message(body)
     assert.equal(b.current().paired[0].language, undefined)
@@ -196,7 +197,7 @@ test('Inbound: ordinary groups require a mention while Topics forums do not', as
 
 test('Inbound: /bind runs before Access but ordinary commands are denied first', async () => {
   const b = bench()
-  b.current().paired[0].access = false
+  b.current().paired[0].access = { botIds: [], roomIds: [] }
   await b.message('/bind', { chat: forum })
   assert.equal(b.binds.length, 1)
   assert.deepEqual(b.notices, [])
@@ -211,13 +212,13 @@ test('Inbound: /bind runs before Access but ordinary commands are denied first',
 
 test('Inbound: numbers may answer a Card before the later Access denial', async () => {
   const consumed = bench({ number: async () => true })
-  consumed.current().paired[0].access = false
+  consumed.current().paired[0].access = { botIds: [], roomIds: [] }
   await consumed.message('1 3')
   assert.equal(consumed.numbers.length, 1)
   assert.deepEqual(consumed.notices, [])
   assert.deepEqual(consumed.sent, [])
   const refused = bench()
-  refused.current().paired[0].access = false
+  refused.current().paired[0].access = { botIds: [], roomIds: [] }
   await refused.message('1')
   assert.equal(refused.numbers.length, 1)
   assert.equal(refused.notices.at(-1).text, '<denied>')
@@ -287,7 +288,7 @@ test('Inbound: send failures remove the Origin and retain the original rejection
 for (const change of ['Access narrowed', 'target rebound', 'target unbound', 'person unpaired']) {
   test(`Inbound: ${change} during the Origin save refuses delivery`, async () => {
     const b = bench({ onAsked: b => b.adopt(conn => {
-      if (change === 'Access narrowed') conn.paired[0].access = false
+      if (change === 'Access narrowed') conn.paired[0].access = { botIds: [], roomIds: [] }
       if (change === 'target rebound') conn.chats.forum.topics[7].target = { botId: 'b' }
       if (change === 'target unbound') delete conn.chats.forum.topics[7]
       if (change === 'person unpaired') conn.paired = []
