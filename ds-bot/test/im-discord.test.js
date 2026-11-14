@@ -99,18 +99,42 @@ test('a DM is direct, a guild message is a mention when the bot is in mentions',
   assert.equal(messages[1].mentioned, true)
   assert.equal(messages[1].text, 'hey  ping')
   assert.equal(messages[2].mentioned, false)
+  assert.equal(fake.calls.some(call => call.path === '/api/v10/channels/dm1'), false)
 })
 
-test('a guild message uses its channel name as the chat title', async (t) => {
+test('guild messages look up and cache the channel title', async (t) => {
   const fake = await fakeDiscord()
+  fake.replies['/api/v10/channels/g1'] = { result: { id: 'g1', name: 'general' } }
   const messages = []
   const handle = discord.connect({ token: 'tok' }, env(fake), { onMessage: async msg => { messages.push(msg) }, onAction: () => {}, onStatus: () => {} })
   t.after(() => { handle.stop(); fake.close() })
   const ws = await until(() => fake.sockets[0])
   await until(() => fake.packets.some(packet => packet.op === 2))
-  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id: '10', channel_id: 'g1', guild_id: 'w1', channel: { name: 'general' }, content: 'hello', author: { id: 'u1', username: 'Fei' } } })
-  await until(() => messages.length === 1)
-  assert.equal(messages[0].chat.title, 'general')
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id: '10', channel_id: 'g1', guild_id: 'w1', content: 'hello', author: { id: 'u1', username: 'Fei' } } })
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 3, d: { id: '11', channel_id: 'g1', guild_id: 'w1', content: 'again', author: { id: 'u2', username: 'Yan' } } })
+  await until(() => messages.length === 2)
+  assert.deepEqual(messages.map(msg => msg.chat.title), ['general', 'general'])
+  assert.equal(fake.calls.filter(call => call.path === '/api/v10/channels/g1').length, 1)
+  assert.equal(fake.calls.find(call => call.path === '/api/v10/channels/g1').method, 'GET')
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 4, d: { id: '12', channel_id: 'g1', guild_id: 'w1', content: 'later', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 3)
+  assert.equal(messages[2].chat.title, 'general')
+  assert.equal(fake.calls.filter(call => call.path === '/api/v10/channels/g1').length, 1)
+})
+
+test('a failed guild channel lookup keeps messages with an empty title and is cached', async (t) => {
+  const fake = await fakeDiscord()
+  fake.replies['/api/v10/channels/g1'] = { error: 403, description: 'Missing Access' }
+  const messages = []
+  const handle = discord.connect({ token: 'tok' }, env(fake), { onMessage: async msg => { messages.push(msg) }, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  const ws = await until(() => fake.sockets[0])
+  await until(() => fake.packets.some(packet => packet.op === 2))
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id: '10', channel_id: 'g1', guild_id: 'w1', content: 'hello', author: { id: 'u1', username: 'Fei' } } })
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 3, d: { id: '11', channel_id: 'g1', guild_id: 'w1', content: 'again', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 2)
+  assert.deepEqual(messages.map(msg => [msg.chat.title, msg.text]), [['', 'hello'], ['', 'again']])
+  assert.equal(fake.calls.filter(call => call.path === '/api/v10/channels/g1').length, 1)
 })
 
 test('a component press is deferred and reports the action', async (t) => {

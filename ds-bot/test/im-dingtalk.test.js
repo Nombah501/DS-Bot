@@ -107,6 +107,10 @@ test('system pings get a pong, a single chat and an @ group message land, every 
 
 for (const [name, conversationType, isInAtList, content, expected] of [
   ['a mentioned group command drops the leading bot mention', '2', true, '@Bot /stop', '/stop'],
+  ['a mentioned group command immediately after the bot mention keeps its slash', '2', true, '@Bot/stop', '/stop'],
+  ['a bot mention alone becomes empty text', '2', true, '@Bot', ''],
+  ['text glued to a bot mention without whitespace or a slash is removed too', '2', true, '@Bot，继续', ''],
+  ['a multi-word bot mention leaves its later words', '2', true, '@Team Bot /stop', 'Bot /stop'],
   ['a mentioned group Card answer drops the leading bot mention', '2', true, '@Bot 2', '2'],
   ['a mentioned group message drops consecutive leading mentions', '2', true, ' \t@Bot @Person /stop', '/stop'],
   ['a mentioned group message keeps mentions after the first other word', '2', true, '@Bot hello @Person', 'hello @Person'],

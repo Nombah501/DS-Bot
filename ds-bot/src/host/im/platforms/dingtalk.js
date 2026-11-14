@@ -102,7 +102,7 @@ export default {
         chat: { key, kind: direct ? 'direct' : 'group', title: '' },
         sender: { id: sender, name: String(data.senderNick ?? sender) },
         // DingTalk puts the bot mention first but does not supply its display name.
-        text: mentioned ? text.replace(/^(?:@\S+\s*)+/, '') : text, images: [], files: [],
+        text: mentioned ? text.replace(/^(?:@[^\s/]+\s*)+/, '') : text, images: [], files: [],
         mentioned, messageId: String(data.msgId ?? ''),
       })
     }
