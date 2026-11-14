@@ -39,13 +39,13 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 
 ## Install into a DSH profile
 
-Download the plugin tarball from [release v0.3.6-tb.2](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.2), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
+Download the plugin tarball from [release v0.3.6-tb.3](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.3), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
 
 Run these yourself in a download directory (stop the running DSH instance before replacing its plugin):
 
 ```sh
-gh release download v0.3.6-tb.2 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.2.tgz'
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.2.tgz"
+gh release download v0.3.6-tb.3 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.3.tgz'
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.3.tgz"
 npx @deepseek-ai/dsh@0.2.2-rc.1 web
 ```
 
@@ -71,7 +71,7 @@ The publisher splits the current committed branch at `ds-bot/`, fetches only the
 
 The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/upstream-watch.yml) checks stable releases daily at 06:23 UTC and on manual dispatch. A [“Sync with upstream vX.Y.Z” issue](https://github.com/Nombah501/DS-Bot/issues?q=is%3Aissue+%22Sync+with+upstream%22), with release notes and a tag comparison, is the signal to follow the sync runbook. Existing open or closed issues suppress duplicates. It needs only the built-in `GITHUB_TOKEN`, never merges or publishes, and never changes `.upstream-release`.
 
-After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.6-tb.2.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
+After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.6-tb.3.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
 
 Past upstream contributions: [room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396) and the Discussions [#1397](https://github.com/Fei2411/DS-Bot/discussions/1397), [#1398](https://github.com/Fei2411/DS-Bot/discussions/1398) and [#1399](https://github.com/Fei2411/DS-Bot/discussions/1399). Upstream accepts pull requests only from collaborators and has not answered these, so the fork no longer contributes upstream; its features and fixes are maintained here.
 
