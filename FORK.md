@@ -1,6 +1,6 @@
 # Telegram Bridge fork
 
-This is [Nombah501/DS-Bot](https://github.com/Nombah501/DS-Bot/tree/telegram-bridge), an Apache-2.0 fork of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot). It keeps DS Bot's long-lived Bots and DSH plugin architecture and extends Telegram as a remote control, not a conversation mirror. The plugin release is **0.3.6-tb.1**; desktop and mobile installers are not fork release artifacts.
+This is [Nombah501/DS-Bot](https://github.com/Nombah501/DS-Bot/tree/telegram-bridge), an Apache-2.0 fork of [Fei2411/DS-Bot](https://github.com/Fei2411/DS-Bot). It keeps DS Bot's long-lived Bots and DSH plugin architecture and extends Telegram as a remote control, not a conversation mirror. The current plugin release is named in [Install into a DSH profile](#install-into-a-dsh-profile); desktop and mobile installers are not fork release artifacts.
 
 ## What's new
 
