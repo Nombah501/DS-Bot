@@ -378,7 +378,6 @@ export function install(rt) {
         const runner = runners.get(conn.id)
         await showStatus(rt, {
           chat: msg.chat, target, text, steps: statusSteps,
-          panels: runner?.panels,
           richCards: imPlatform(conn.platform)?.richCards === true,
           sendCard: runner?.handle !== undefined && imPlatform(conn.platform)?.richCards === true ? (...args) => cards.send(conn, ...args) : undefined,
           sendText: body => runner?.delivery.output({ chat: msg.chat, target }, { text: body, rich: true }),
@@ -470,7 +469,7 @@ export function install(rt) {
     const choice = data.slice(cut + 1)
     if (imPlatform(conn.platform)?.statusPanel === true && data.startsWith('t:')) {
       const entry = cards.byMessage(conn, chat, cardKey, action.messageId)
-      if (chat.kind !== 'group' || choice !== 'stop' || entry === undefined) {
+      if ((chat.kind !== 'group' && chat.kind !== 'direct') || choice !== 'stop' || entry === undefined) {
         await sendCardReply(conn, chat, text('idle'), action)
         return
       }

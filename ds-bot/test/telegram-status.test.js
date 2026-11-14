@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { deflateSync } from 'node:zlib'
-import { setTimeout as delay } from 'node:timers/promises'
 import { startBridge, until } from './telegram-bridge.js'
 
 const team = () => ({
@@ -24,142 +22,126 @@ const setup = async t => {
   return s
 }
 
-test('S1: /status posts and pins an offline size-bounded widget in its private Topic', async t => {
-  const s = await setup(t)
-  s.sessionEvent('turn/start', { turn: 1 }, 'b')
-  s.sessionEvent('step/start', { step: 3 }, 'b')
-  s.sessionEvent('tool/call', { callId: 'read-1', name: 'read_file', arguments: '{}' }, 'b')
-  s.message('/status', { message_thread_id: 102 })
-  const widget = await s.request('sendWidget')
-  assert.equal(widget.params.chat_id, '5')
-  assert.equal(widget.params.message_thread_id, 102)
-  assert.equal(widget.params.allow_queries, true)
-  const data = JSON.parse(widget.params.chat_data)
-  assert.equal(data.name, 'Writer')
-  assert.equal(data.state, 'Working')
-  assert.equal(data.tool, 'read_file')
-  assert.equal(data.step, 3)
-  assert.ok(data.since > 0)
-  assert.ok(Buffer.byteLength(widget.params.html) <= 32768)
-  assert.ok(deflateSync(widget.params.html, { level: 9 }).length <= 4096)
-  assert.doesNotMatch(widget.params.html, /https?:|fetch\(|XMLHttpRequest|WebSocket/)
-  assert.doesNotMatch(widget.params.html + widget.params.chat_data, /cost|token/i)
-  const pin = await s.request('pinChatMessage')
-  assert.equal(pin.params.chat_id, '5')
-  assert.ok(Number.isSafeInteger(pin.params.message_id))
-  assert.ok(s.calls.find(c => c.method === 'getUpdates').params.allowed_updates.includes('widget_query'))
-  assert.equal(s.prompts.length, 0)
-})
-
-test('S1: status data follows only its target and coalesces changes at one-second intervals', async t => {
-  const s = await setup(t)
-  const times = []
-  s.replies.editMessageWidgetData = () => { times.push(Date.now()); return { ok: true, result: true } }
-  s.message('/status', { message_thread_id: 102 })
-  await s.request('pinChatMessage')
-  s.sessionEvent('turn/start', { turn: 1 }, 'b')
-  s.sessionEvent('step/start', { turn: 1, step: 2 }, 'b')
-  s.sessionEvent('tool/call', { callId: 'first', name: 'read_file', arguments: '{}' }, 'b')
-  const first = await s.request('editMessageWidgetData', p => JSON.parse(p.chat_data).tool === 'read_file')
-  assert.equal(first.params.chat_id, '5')
-  assert.equal(JSON.parse(first.params.chat_data).step, 2)
-  assert.ok(Buffer.byteLength(first.params.chat_data) <= 1024)
-  for (let i = 0; i < 100; i++) s.sessionEvent('step/start', { turn: 1, step: i + 3 }, 'b')
-  s.sessionEvent('tool/call', { callId: 'latest', name: 'write_file', arguments: '{}' }, 'b')
-  await delay(200)
-  assert.equal(times.length, 1)
-  const latest = await s.request('editMessageWidgetData', p => JSON.parse(p.chat_data).tool === 'write_file')
-  assert.equal(latest.params.message_id, first.params.message_id)
-  assert.equal(JSON.parse(latest.params.chat_data).step, 102)
-  assert.ok(times[1] - times[0] >= 950)
+const status = async (s, threadId, extra = {}) => {
   const after = s.calls.length
-  s.sessionEvent('turn/start', { turn: 2 }, 'a')
-  s.sessionEvent('tool/call', { callId: 'other', name: 'other_target_tool', arguments: '{}' }, 'a')
-  await delay(1100)
-  assert.equal(s.calls.slice(after).filter(c => c.method === 'editMessageWidgetData').length, 0)
-  s.sessionEvent('turn/end', { turn: 1 }, 'b')
-  const idle = await s.request('editMessageWidgetData', p => JSON.parse(p.chat_data).state === 'Idle')
-  assert.equal(JSON.parse(idle.params.chat_data).active, false)
-})
+  const messageId = 700
+  s.replies.sendRichMessage = { ok: true, result: { message_id: messageId } }
+  s.message('/status', { message_thread_id: threadId, ...extra })
+  const sent = await s.request('sendRichMessage', p => p.chat_id === '5', after)
+  const data = /type="callback_data" data="([^"]+)"/.exec(sent.params.rich_message.html)?.[1]
+  return { sent, data, messageId }
+}
+const press = (s, id, snapshot, threadId, { from = { id: 9, language_code: 'en' }, message = {}, data = snapshot.data } = {}) => {
+  s.pushUpdate({ callback_query: {
+    id, from, data,
+    message: { message_id: snapshot.messageId, chat: { id: 5, type: 'private' }, message_thread_id: threadId, ...message },
+  } })
+}
 
-test('S1: Stop widget queries acknowledge promptly and authenticate the stored Topic target', async t => {
+test('S1: private /status sends an active snapshot in its Topic and Stop settles it once', async t => {
   const s = await setup(t)
   s.sessionEvent('turn/start', { turn: 1 }, 'a')
   s.sessionEvent('turn/start', { turn: 1 }, 'b')
-  s.message('/status', { message_thread_id: 102 })
-  const pin = await s.request('pinChatMessage')
-  const query = (id, extra = {}) => s.pushUpdate({ widget_query: {
-    id, chat: { id: 5, type: 'private' }, from: { id: 9, language_code: 'en' },
-    message_id: pin.params.message_id, chat_instance: 'private-5', type: { type: 'data' }, data: 'stop', ...extra,
-  } })
-  query('unpaired', { from: { id: 99 } })
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'unpaired')
-  query('wrong-message', { message_id: pin.params.message_id + 1000 })
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'wrong-message')
-  query('wrong-chat', { chat: { id: 6, type: 'private' } })
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'wrong-chat')
-  query('wrong-type', { type: { type: 'sign_data' } })
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'wrong-type')
-  query('unknown', { data: 'not-stop' })
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'unknown')
-  assert.notEqual(s.agentOf('b').cancelled, true)
-  const started = performance.now()
-  query('stop-writer')
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'stop-writer')
-  assert.ok(performance.now() - started < 15000)
+  s.sessionEvent('step/start', { step: 3 }, 'b')
+  s.sessionEvent('tool/call', { callId: 'read-1', name: 'read_file', arguments: '{}' }, 'b')
+  const snapshot = await status(s, 102)
+  const html = snapshot.sent.params.rich_message.html
+  assert.equal(snapshot.sent.params.message_thread_id, 102)
+  assert.match(html, /Writer.*Working/s)
+  assert.match(html, /Tool: read_file/)
+  assert.match(html, /Step: 3/)
+  assert.match(html, /Turn elapsed: \d+ s/)
+  assert.match(html, />Stop<\/tg-button>/)
+  assert.match(snapshot.data, /^t:[0-9a-f-]{36}:stop$/)
+  assert.ok(Buffer.byteLength(snapshot.data) <= 64)
+  let stops = 0
+  const stop = s.rt.stopChat
+  s.rt.stopChat = async botId => { stops++; assert.equal(botId, 'b'); return stop(botId) }
+  press(s, 'stop-writer', snapshot, 102)
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'stop-writer' && p.text === 'Stopped.')
   await until(() => s.agentOf('b').cancelled)
   assert.notEqual(s.agentOf('a').cancelled, true)
-  const stopped = await s.request('sendMessage', p => p.text === 'Stopped.')
-  assert.equal(stopped.params.message_thread_id, 102)
+  const edited = await s.request('editMessageText', p => p.message_id === snapshot.messageId)
+  assert.match(edited.params.rich_message.html, /— Stopped\./)
+  assert.doesNotMatch(edited.params.rich_message.html, /type="callback_data"/)
+  press(s, 'stop-again', snapshot, 102)
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'stop-again' && p.text === 'Nothing is running.')
+  assert.equal(stops, 1)
+  assert.equal(s.calls.some(c => c.method === 'sendWidget' || c.method === 'pinChatMessage'), false)
+  assert.equal(s.prompts.length, 0)
 })
 
-test('S1: a Stop widget press without a Telegram language answers in the chat language', async t => {
+test('S1: idle private /status sends snapshot text in its Topic without a widget or pin', async t => {
   const s = await setup(t)
-  s.sessionEvent('turn/start', { turn: 1 }, 'b')
-  s.message('/status', { message_thread_id: 102, from: { id: 9, first_name: 'Ann', language_code: 'ru' } })
-  const pin = await s.request('pinChatMessage')
-  s.pushUpdate({ widget_query: {
-    id: 'stop-ru', chat: { id: 5, type: 'private' }, from: { id: 9 },
-    message_id: pin.params.message_id, chat_instance: 'private-5', type: { type: 'data' }, data: 'stop',
-  } })
-  await until(() => s.agentOf('b').cancelled)
-  const stopped = await s.request('sendMessage', p => p.text === 'Остановлено.' || p.text === 'Stopped.')
-  assert.equal(stopped.params.text, 'Остановлено.')
+  const snapshot = await status(s, 102)
+  assert.equal(snapshot.sent.params.message_thread_id, 102)
+  assert.match(snapshot.sent.params.rich_message.html, /Writer — Idle/)
+  assert.match(snapshot.sent.params.rich_message.html, /Tool: —/)
+  assert.match(snapshot.sent.params.rich_message.html, /Step: 0/)
+  assert.match(snapshot.sent.params.rich_message.html, /Turn elapsed: 0 s/)
+  assert.equal(snapshot.data, undefined)
+  assert.doesNotMatch(snapshot.sent.params.rich_message.html, /<tg-button/)
+  assert.equal(s.calls.some(c => c.method === 'sendWidget' || c.method === 'pinChatMessage'), false)
+  assert.equal(s.prompts.length, 0)
 })
 
-test('S1: private root status supports Russian, waiting Cards and restart without duplicates', async t => {
-  const s = await startBridge(t, { timeout: 10000 })
-  s.sessionEvent('turn/start', { turn: 1 })
+test('S1: private status Stop authenticates the paired person and stored Topic target', async t => {
+  const s = await setup(t)
+  s.message('hello', { chat: { id: 6, type: 'private' }, from: { id: 10, first_name: 'Ben', language_code: 'en' } })
+  await s.request('sendMessage', p => p.chat_id === '6' && /connection request/.test(p.text))
+  await s.rt.imEndpoint('im-pair', { id: s.connection.id, senderId: '10', allow: true, access: { botIds: [], roomIds: [] } })
+  s.sessionEvent('turn/start', { turn: 1 }, 'b')
+  const snapshot = await status(s, 102)
+  let stops = 0
+  s.rt.stopChat = async () => { stops++; return true }
+  for (const [id, options, reply] of [
+    ['unpaired', { from: { id: 99 } }, 'This Bot or group is not on your Access list.'],
+    ['denied', { from: { id: 10 } }, 'This Bot or group is not on your Access list.'],
+    ['wrong-message', { message: { message_id: snapshot.messageId + 1 } }, 'Nothing is running.'],
+    ['wrong-chat', { message: { chat: { id: 6, type: 'private' } } }, 'Nothing is running.'],
+    ['wrong-topic', { message: { message_thread_id: 101 } }, 'Nothing is running.'],
+    ['unknown', { data: snapshot.data.replace(/:stop$/, ':other') }, 'Nothing is running.'],
+  ]) {
+    press(s, id, snapshot, 102, options)
+    await s.request('answerCallbackQuery', p => p.callback_query_id === id && p.text === reply)
+    assert.equal(stops, 0)
+  }
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: [] } })
+  press(s, 'revoked', snapshot, 102)
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'revoked' && /Access list|Nothing is running/.test(p.text))
+  assert.equal(stops, 0)
+  const after = s.calls.length
+  s.message('/status', { message_thread_id: 102 })
+  await s.request('sendMessage', p => p.message_thread_id === 102 && /not on your Access list/.test(p.text), after)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendRichMessage' || c.method === 'sendWidget' || c.method === 'pinChatMessage'), false)
+})
+
+test('S1: private root status supports Russian waiting Cards and settles when work ends', async t => {
+  const s = await startBridge(t)
   await s.question({ question: 'Choose', options: [{ label: 'Yes' }] })
   const card = await s.request('sendRichMessage', p => /Choose/.test(p.rich_message.html))
   const questionId = /data="q:([^"]+):0"/.exec(card.params.rich_message.html)[1]
-  s.message('/status', { from: { id: 9, first_name: 'Ann', language_code: 'ru-RU' } })
-  const widget = await s.request('sendWidget')
-  assert.equal(JSON.parse(widget.params.chat_data).state, 'Ждёт ответа на карточку')
-  assert.match(widget.params.html, /Остановить/)
-  assert.match(widget.params.html, /Инструмент/)
-  assert.match(widget.params.caption, /Панель состояния/)
-  assert.ok(Buffer.byteLength(widget.params.html) <= 32768)
-  assert.ok(deflateSync(widget.params.html, { level: 9 }).length <= 4096)
-  await s.request('pinChatMessage')
-  await s.restart()
-  const after = s.calls.length
-  s.message('/status', { from: { id: 9, language_code: 'ru' } })
+  const snapshot = await status(s, undefined, { from: { id: 9, first_name: 'Ann', language_code: 'ru-RU' } })
+  assert.equal(snapshot.sent.params.message_thread_id, undefined)
+  assert.match(snapshot.sent.params.rich_message.html, /Chief — Ждёт ответа на карточку/)
+  assert.match(snapshot.sent.params.rich_message.html, /Инструмент: —/)
+  assert.match(snapshot.sent.params.rich_message.html, /Остановить/)
   await s.rt.answerQuestion('a', questionId, { selected: ['Yes'] })
-  await s.request('editMessageWidgetData', p => JSON.parse(p.chat_data).state === 'Свободен', after)
-  assert.equal(s.calls.slice(after).filter(c => c.method === 'sendWidget').length, 0)
+  press(s, 'finished', snapshot, undefined, { from: { id: 9, language_code: 'ru' } })
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'finished' && p.text === 'Сейчас ничего не выполняется.')
+  const settled = await s.request('editMessageText', p => p.message_id === snapshot.messageId)
+  assert.doesNotMatch(settled.params.rich_message.html, /type="callback_data"/)
+  assert.notEqual(s.agentOf('a').cancelled, true)
 })
 
-test('S1: a Status panel Telegram could not pin is still the one panel', async t => {
-  const s = await startBridge(t)
-  s.replies.pinChatMessage = { ok: false, error_code: 400, description: 'Bad Request: not enough rights to manage pinned messages in the chat' }
-  s.message('/status')
-  await s.request('pinChatMessage')
-  const after = s.calls.length
+test('S1: private /status in an unbound Topic cannot reach the Default Bot', async t => {
+  const s = await setup(t)
   s.sessionEvent('turn/start', { turn: 1 })
-  s.message('/status')
-  await s.request('editMessageWidgetData', p => JSON.parse(p.chat_data).state === 'Working', after)
-  assert.equal(s.calls.slice(after).filter(c => c.method === 'sendWidget').length, 0)
+  const after = s.calls.length
+  s.message('/status', { message_thread_id: 999 })
+  await s.request('sendMessage', p => p.message_thread_id === 999 && /not bound/.test(p.text), after)
+  assert.equal(s.calls.slice(after).some(c => c.method === 'sendRichMessage' || c.method === 'sendWidget' || c.method === 'pinChatMessage'), false)
+  assert.equal(s.prompts.length, 0)
 })
 
 test('S1: group /status is a rich snapshot with the same progress fields, never a widget', async t => {
@@ -183,21 +165,18 @@ test('S1: group /status is a rich snapshot with the same progress fields, never 
   assert.equal(s.calls.filter(c => c.method === 'sendWidget').length, 0)
 })
 
-test('S1: room Topic status Stop cancels room work, and revoked panels cannot stop or update', async t => {
+test('S1: private room Topic status Stop cancels room work without stopping the Bot own chat', async t => {
   const s = await setup(t)
   s.rt.liveOf('ar1').turn = 1
   s.rt.liveOf('a').turn = 1
-  s.message('/status', { message_thread_id: 103 })
-  const pin = await s.request('pinChatMessage')
-  s.pushUpdate({ widget_query: { id: 'room-stop', chat: { id: 5, type: 'private' }, from: { id: 9 }, message_id: pin.params.message_id, type: { type: 'data' }, data: 'stop' } })
+  const snapshot = await status(s, 103)
+  assert.match(snapshot.sent.params.rich_message.html, /Ops.*Working/s)
+  assert.equal(snapshot.sent.params.message_thread_id, 103)
+  press(s, 'room-stop', snapshot, 103)
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'room-stop' && p.text === 'Stopped.')
   await until(() => s.agentOf('ar1').cancelled)
   assert.notEqual(s.agentOf('a').cancelled, true)
-  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: [] } })
-  const after = s.calls.length
-  s.pushUpdate({ widget_query: { id: 'revoked', chat: { id: 5, type: 'private' }, from: { id: 9 }, message_id: pin.params.message_id, type: { type: 'data' }, data: 'stop' } })
-  await s.request('answerWidgetQuery', p => p.widget_query_id === 'revoked')
-  await delay(1100)
-  assert.equal(s.calls.slice(after).filter(c => c.method === 'editMessageWidgetData' || (c.method === 'sendMessage' && c.params.text === 'Stopped.')).length, 0)
+  await s.request('editMessageText', p => p.message_id === snapshot.messageId)
 })
 
 test('S1: a Topic reconciliation failure cannot leave an unreachable poller after disconnect', async t => {
@@ -222,5 +201,5 @@ test('S1: a Topic reconciliation failure cannot leave an unreachable poller afte
   await s.request('getUpdates', () => true, after)
   await until(() => s.activePolls === 1)
   s.message('/status', { message_thread_id: 1 })
-  await s.request('sendWidget', p => p.message_thread_id === 1, after)
+  await s.request('sendRichMessage', p => p.message_thread_id === 1 && /Chief — Idle/.test(p.rich_message.html), after)
 })

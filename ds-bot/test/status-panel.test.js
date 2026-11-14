@@ -47,28 +47,41 @@ test('Status view: active groups get a Card with the same text and a fresh Stop 
   assert.deepEqual(content(), { text: body, options: [{ data: `${key}:stop`, label: 'Stop' }] })
 })
 
-test('Status view: private chats prefer their Status panel over a Card', async () => {
+test('Status view: active direct chats get a snapshot Card with Stop in the same Topic', async t => {
   const { rt, sent, options } = setup()
-  options.chat.kind = 'direct'
-  rt.live.set('a', { turn: 1 })
-  options.panels = { show: (...args) => sent.push({ panel: args }) }
+  t.mock.method(Date, 'now', () => 123456)
+  options.chat = { key: '5', kind: 'direct', threadId: 102 }
+  rt.live.set('a', { turn: 1, since: 58000, tool: 'read_file' })
+  options.steps.set('a', 4)
   await showStatus(rt, options)
-  assert.deepEqual(sent, [{ panel: [options.chat, options.target, options.text] }])
+  const [key, places, body, output, content] = sent[0].card
+  assert.match(key, /^t:[0-9a-f-]{36}$/)
+  assert.deepEqual(places, [{ chat: options.chat, target: options.target }])
+  assert.equal(body, 'Chief — Working\nTool: read_file\nStep: 4\nTurn elapsed: 65 s')
+  assert.equal(output, undefined)
+  assert.deepEqual(content(), { text: body, options: [{ data: `${key}:stop`, label: 'Stop' }] })
 })
 
-for (const variant of ['private without panels', 'group without rich Cards', 'group without Card sending']) {
-  test(`Status view: ${variant} falls back to text even while working`, async t => {
-    const { rt, sent, options } = setup()
-    t.mock.method(Date, 'now', () => 1000)
-    rt.live.set('a', { turn: 1, since: 2000 })
-    if (variant === 'private without panels') options.chat.kind = 'direct'
-    if (variant === 'group without rich Cards') options.richCards = false
-    if (variant === 'group without Card sending') options.sendCard = undefined
-    options.panels = { show: () => assert.fail('Group status cannot use a Status panel') }
-    if (options.chat.kind === 'direct') options.panels = undefined
-    await showStatus(rt, options)
-    assert.deepEqual(sent, [{ text: 'Chief — Working\nTool: —\nStep: 0\nTurn elapsed: 0 s' }])
-  })
+test('Status view: idle direct chats get the snapshot text without Stop', async () => {
+  const { rt, sent, options } = setup()
+  options.chat.kind = 'direct'
+  await showStatus(rt, options)
+  assert.deepEqual(sent, [{ text: 'Chief — Idle\nTool: —\nStep: 0\nTurn elapsed: 0 s' }])
+})
+
+for (const kind of ['direct', 'group']) {
+  for (const variant of ['without rich Cards', 'without Card sending']) {
+    test(`Status view: ${kind} ${variant} falls back to text even while working`, async t => {
+      const { rt, sent, options } = setup()
+      t.mock.method(Date, 'now', () => 1000)
+      rt.live.set('a', { turn: 1, since: 2000 })
+      options.chat.kind = kind
+      if (variant === 'without rich Cards') options.richCards = false
+      if (variant === 'without Card sending') options.sendCard = undefined
+      await showStatus(rt, options)
+      assert.deepEqual(sent, [{ text: 'Chief — Working\nTool: —\nStep: 0\nTurn elapsed: 0 s' }])
+    })
+  }
 }
 
 test('Status view: a waiting room uses localized text, its earliest turn and highest step', async t => {

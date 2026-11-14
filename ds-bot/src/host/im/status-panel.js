@@ -24,14 +24,10 @@ export function statusData(rt, target, text, steps) {
   }
 }
 
-export async function showStatus(rt, { chat, target, text, steps, panels, richCards, sendCard, sendText }) {
-  if (panels !== undefined && chat.kind === 'direct') {
-    await panels.show(chat, target, text)
-    return
-  }
+export async function showStatus(rt, { chat, target, text, steps, richCards, sendCard, sendText }) {
   const data = statusData(rt, target, text, steps)
   const body = `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`
-  if (chat.kind === 'group' && data.active && richCards && sendCard !== undefined) {
+  if (data.active && richCards && sendCard !== undefined) {
     const key = `t:${randomUUID()}`
     await sendCard(key, [{ chat, target }], body, undefined,
       () => ({ text: body, options: [{ data: `${key}:stop`, label: text('stop') }] }))

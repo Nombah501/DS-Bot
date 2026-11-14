@@ -140,35 +140,26 @@ test('S1: unrelated permanent send errors never create replacement Topics', asyn
   assert.equal(s.calls.slice(after).some(call => call.method === 'createForumTopic'), false)
 })
 
-test('S1: a Status panel sent to a deleted Topic recovers, pins and stops its original Bot', async t => {
+test('S1: a status Card sent to a deleted Topic recovers and stops its original Bot', async t => {
   const s = await setup(t)
-  s.replies.sendWidget = params => params.message_thread_id === 102
-    ? { ok: false, error_code: 400, description: 'Bad Request: message thread not found' }
-    : { ok: true, result: { message_id: 601 } }
-  const after = s.calls.length
-  s.message('/status', { message_thread_id: 102 })
-  const widget = await s.request('sendWidget', p => p.message_thread_id === 104, after)
-  assert.equal(JSON.parse(widget.params.chat_data).name, 'Writer')
-  await s.request('pinChatMessage', p => p.message_id === 601, after)
-  s.pushUpdate({ widget_query: { id: 'recovered-panel', from: { id: 9, first_name: 'Ann' }, chat: { id: 5, type: 'private' }, message_id: 601, type: { type: 'data' }, data: 'stop' } })
-  await s.request('sendMessage', p => p.message_thread_id === 104 && /Nothing is running/.test(p.text), after)
-})
-
-test('S1: an existing Status panel is replaced after Step delivery recovers its deleted Topic', async t => {
-  const s = await setup(t)
-  s.message('/status', { message_thread_id: 102 })
-  await s.request('pinChatMessage')
   s.replies.sendRichMessage = params => params.message_thread_id === 102
     ? { ok: false, error_code: 400, description: 'Bad Request: message thread not found' }
-    : { ok: true, result: { message_id: 602 } }
+    : { ok: true, result: { message_id: 601 } }
+  s.sessionEvent('turn/start', { turn: 1 }, 'a')
+  s.sessionEvent('turn/start', { turn: 1 }, 'b')
   const after = s.calls.length
-  s.step('Recover panel Topic', {}, 'b')
-  await s.request('sendRichMessage', p => p.message_thread_id === 104, after)
-  const widget = await s.request('sendWidget', p => p.message_thread_id === 104, after)
-  assert.equal(JSON.parse(widget.params.chat_data).name, 'Writer')
-  const pin = await s.request('pinChatMessage', () => true, after)
-  s.pushUpdate({ widget_query: { id: 'moved-panel', from: { id: 9 }, chat: { id: 5, type: 'private' }, message_id: pin.params.message_id, type: { type: 'data' }, data: 'stop' } })
-  await s.request('sendMessage', p => p.message_thread_id === 104 && /Nothing is running/.test(p.text), after)
+  s.message('/status', { message_thread_id: 102 })
+  const card = await s.request('sendRichMessage', p => p.message_thread_id === 104, after)
+  assert.match(card.params.rich_message.html, /Writer — Working/)
+  const data = /data="([^"]+:stop)"/.exec(card.params.rich_message.html)[1]
+  s.pushUpdate({ callback_query: {
+    id: 'recovered-status', from: { id: 9, first_name: 'Ann' }, data,
+    message: { message_id: 601, chat: { id: 5, type: 'private' }, message_thread_id: 104 },
+  } })
+  await s.request('answerCallbackQuery', p => p.callback_query_id === 'recovered-status' && p.text === 'Stopped.', after)
+  await until(() => s.agentOf('b').cancelled)
+  assert.notEqual(s.agentOf('a').cancelled, true)
+  await s.request('editMessageText', p => p.message_id === 601 && !/type="callback_data"/.test(p.rich_message.html), after)
 })
 
 test('S1: private Topic lifecycle leaves admin-managed forum bindings intact', async t => {

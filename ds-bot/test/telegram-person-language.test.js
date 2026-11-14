@@ -47,7 +47,7 @@ test('S1: auto and legacy people follow Telegram; invalid and empty /lang preser
   assert.equal(s.prompts.length, 0)
 })
 
-test('S1: a private Topic and its Status panel use the paired owner preference', async t => {
+test('S1: a private Topic and its status snapshot use the paired owner preference', async t => {
   const s = await startBridge(t, {
     pair: false,
     getMe: { id: 7, username: 'fakebot', is_bot: true, has_topics_enabled: true },
@@ -63,10 +63,10 @@ test('S1: a private Topic and its Status panel use the paired owner preference',
   assert.equal(card.params.message_thread_id, 101)
   assert.match(card.params.rich_message.html, /Chief спрашивает:.*Topic choice/s)
   s.message('/status', { message_thread_id: 101, from: from('en') })
-  const panel = await s.request('sendWidget')
-  assert.match(panel.params.html, /Остановить/)
-  assert.equal(JSON.parse(panel.params.chat_data).state, 'Ждёт ответа на карточку')
-  await s.request('pinChatMessage')
+  const status = await s.request('sendRichMessage', p => /Ждёт ответа на карточку/.test(p.rich_message.html))
+  assert.equal(status.params.message_thread_id, 101)
+  assert.match(status.params.rich_message.html, /Остановить/)
+  assert.equal(s.calls.some(c => c.method === 'sendWidget' || c.method === 'pinChatMessage'), false)
 })
 
 test('S1: group Cards follow the last speaker but a Private card follows its Initiator', async t => {
