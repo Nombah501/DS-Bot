@@ -47,12 +47,12 @@ export function accessTargets(person, state) {
   ].filter(target => allows(person, target))
 }
 
-export function topics(rt, { connections, handleOf, textForChat, deliverable, replaced = [], platformOf = imPlatform }) {
+export function topics(rt, { connections, handleOf, textForChat, deliverable, replaced = [] }) {
   const ensuring = new Map()
   const replacing = new Map()
   const chatOf = (connId, chatKey) => connections()[connId]?.chats?.[chatKey]
   const nameOf = target => (target.botId !== undefined ? rt.botOf(target.botId) : rt.roomOf(target.roomId))?.name
-  const privateChat = (connId, chatKey) => platformOf(connections()[connId]?.platform)?.topics === true && chatOf(connId, chatKey)?.kind === 'direct'
+  const privateChat = (connId, chatKey) => imPlatform(connections()[connId]?.platform)?.topics === true && chatOf(connId, chatKey)?.kind === 'direct'
   // Plans contain values, never records from the state graph that an await can detach.
   const plan = (connId, chatKey, threadId) => {
     const conn = connections()[connId]
@@ -91,7 +91,9 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
       const next = plan(connId, chatKey, threadId)
       if (next === undefined) return undefined
       if (next.replacedBy !== undefined) return next.replacedBy
-      const created = await handleOf(connId).createTopic({ key: chatKey, kind: 'direct' }, next.name)
+      const handle = handleOf(connId)
+      if (handle === undefined) return undefined
+      const created = await handle.createTopic({ key: chatKey, kind: 'direct' }, next.name)
       if (!await record(connId, chatKey, created.threadId, next.target, next.name, threadId)) return undefined
       for (const subscriber of replaced) await subscriber(connId, chatKey, threadId, created.threadId)
       return created.threadId
@@ -106,7 +108,9 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
     if (next.closed) {
       if (next.reason !== undefined) return
       try {
-        await handleOf(connId).reopenTopic(address)
+        const handle = handleOf(connId)
+        if (handle === undefined) return
+        await handle.reopenTopic(address)
       } catch (error) {
         if (error?.topicMissing !== true) throw error
         await replace(connId, chatKey, threadId)
@@ -115,17 +119,24 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
       await changeTopic(connId, chatKey, threadId, topic => { delete topic.closed; delete topic.notified })
     } else if (next.reason !== undefined) {
       if (!next.notified) {
-        await handleOf(connId).send(address, { text: textForChat(connections()[connId], chatKey)(next.reason, { name: next.previousName }) })
+        const handle = handleOf(connId)
+        if (handle === undefined) return
+        await handle.send(address, { text: textForChat(connections()[connId], chatKey)(next.reason, { name: next.previousName }) })
+        if (handleOf(connId) === undefined) return
         await changeTopic(connId, chatKey, threadId, topic => { topic.notified = true })
       }
       if (plan(connId, chatKey, threadId) === undefined) return
-      await handleOf(connId).closeTopic(address)
+      const handle = handleOf(connId)
+      if (handle === undefined) return
+      await handle.closeTopic(address)
       await changeTopic(connId, chatKey, threadId, topic => { topic.closed = true })
       return
     }
     const current = plan(connId, chatKey, threadId)
     if (current !== undefined && current.name !== undefined && current.previousName !== current.name) {
-      await handleOf(connId).renameTopic(address, current.name)
+      const handle = handleOf(connId)
+      if (handle === undefined) return
+      await handle.renameTopic(address, current.name)
       await changeTopic(connId, chatKey, threadId, topic => { topic.name = current.name })
     }
   }
@@ -147,8 +158,16 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
         for (const threadId of Object.keys(chatOf(connId, chatKey).topics ?? {})) await reconcile(connId, chatKey, Number(threadId))
         for (const target of targets(connId, chatKey)) {
           if (!privateChat(connId, chatKey) || !needsTopic(connId, chatKey, target)) continue
+          const closed = Object.entries(chatOf(connId, chatKey)?.topics ?? {})
+            .find(([, topic]) => topic.closed && topic.replacedBy === undefined && sameTarget(topic.target, target))?.[0]
+          if (closed !== undefined) {
+            await reconcile(connId, chatKey, Number(closed))
+            continue
+          }
           const name = nameOf(target)
-          const created = await handleOf(connId).createTopic({ key: chatKey, kind: 'direct' }, name)
+          const handle = handleOf(connId)
+          if (handle === undefined) return
+          const created = await handle.createTopic({ key: chatKey, kind: 'direct' }, name)
           // Access can be revoked in flight; record the Topic so the next sweep can close it.
           await record(connId, chatKey, created.threadId, target, name)
         }

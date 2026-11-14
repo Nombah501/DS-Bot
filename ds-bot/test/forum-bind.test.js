@@ -129,3 +129,16 @@ test('Forum bind: removing the chat during the admin lookup does not recreate it
   assert.equal(s.saves(), 0)
   assert.deepEqual(s.notices, [])
 })
+
+test('Forum bind: the sent payload comes from the adopted Card after saving', async () => {
+  const s = bench()
+  const save = s.rt.save
+  s.rt.save = async () => {
+    s.adopt()
+    s.card().card.text = 'Adopted choice'
+    await save()
+  }
+  await s.binder.command(s.conn(), s.msg)
+  assert.equal(s.notices[0].body.card.text, 'Adopted choice')
+  assert.deepEqual(s.notices[0].body.card, s.card().card)
+})

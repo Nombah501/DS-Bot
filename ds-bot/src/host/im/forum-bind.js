@@ -42,18 +42,15 @@ export function forumBinder(rt, { connections, topics, handleOf, deliveryOf, sen
         return
       }
       const id = randomUUID()
-      const card = { text: text('bindChoose'), options: targets.map((target, index) => ({ label: nameOf(target), data: `b:${id}:${index}` })) }
       const key = msg.chat.threadId ?? 1
-      const hold = () => {
-        const saved = connections()[connId]?.chats?.[msg.chat.key]
-        if (saved === undefined) return
-        saved.bindCards ??= {}
-        saved.bindCards[key] = { id, senderId: msg.sender.id, targets, card }
+      conn.chats[msg.chat.key].bindCards ??= {}
+      conn.chats[msg.chat.key].bindCards[key] = {
+        id, senderId: msg.sender.id, targets,
+        card: { text: text('bindChoose'), options: targets.map((target, index) => ({ label: nameOf(target), data: `b:${id}:${index}` })) },
       }
-      hold()
       await rt.save()
       if (cardOf(connId, msg.chat.key, key)?.id !== id) return
-      void deliveryOf(connId)?.notice(msg.chat, { card }, { sent: async sent => {
+      void deliveryOf(connId)?.notice(msg.chat, { card: cardOf(connId, msg.chat.key, key).card }, { sent: async sent => {
         if (!changeCard(connId, msg.chat.key, key, id, held => {
           held.messageId = sent?.messageId
           held.cardFormat = sent?.cardFormat

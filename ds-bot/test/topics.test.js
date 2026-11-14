@@ -4,12 +4,13 @@ import { topics } from '../src/host/im/topics.js'
 import { setup, telegram } from './placement-fixture.js'
 import { delivery } from '../src/host/im/delivery.js'
 
-const bench = ({ replaced = [], capabilities = { topics: true } } = {}) => {
+const bench = ({ replaced = [], platform = 'telegram', deliverable = () => true } = {}) => {
   const state = { bots: { a: { id: 'a', name: 'Chief' } }, rooms: {}, im: { connections: {} } }
-  state.im.connections.c1 = telegram('c1', { chats: { 5: { kind: 'direct', personId: '9', topics: {} } } })
+  state.im.connections.c1 = telegram('c1', { platform, chats: { 5: { kind: 'direct', personId: '9', topics: {} } } })
   const calls = []
   const saved = []
   let next = 100
+  let connected = true
   const handle = {
     createTopic: async () => { calls.push(['create']); return { threadId: ++next } },
     send: async (chat, body) => { calls.push(['notice', chat.threadId, body.text]) },
@@ -22,12 +23,12 @@ const bench = ({ replaced = [], capabilities = { topics: true } } = {}) => {
     save: async () => { saved.push(structuredClone(state)) },
   }
   const { ensure, restore, bind } = topics(rt, {
-    connections: () => state.im.connections, handleOf: () => handle,
-    textForChat: () => (key, values) => `${key}: ${values.name}`, deliverable: () => true,
-    replaced, platformOf: () => capabilities,
+    connections: () => state.im.connections, handleOf: () => connected ? handle : undefined,
+    textForChat: () => (key, values) => `${key}: ${values.name}`, deliverable, replaced,
   })
   return {
     state, calls, saved, handle, rt, ensure, restore, bind,
+    disconnect: () => { connected = false },
     conn: () => state.im.connections.c1,
     chat: () => state.im.connections.c1?.chats[5],
     adopt: () => { state.im.connections = structuredClone(state.im.connections) },
@@ -71,6 +72,7 @@ test('Topics: restored Access silently reopens the same Topic and updates its na
   assert.equal(s.chat().topics[101].closed, undefined)
   assert.equal(s.chat().topics[101].notified, undefined)
   assert.equal(s.chat().topics[101].name, 'Leader')
+  assert.deepEqual(s.calls.filter(([kind]) => kind === 'rename'), [['rename', 101, 'Leader']])
   assert.equal(s.calls.filter(([kind]) => kind === 'notice').length, 1)
 })
 
@@ -235,9 +237,77 @@ test('Topics: unrelated reopen failures leave the closed Topic for the next swee
 })
 
 test('Topics: a platform without Topics has no lifecycle side effects', async () => {
-  const s = bench({ capabilities: {} })
+  const s = bench({ platform: 'discord' })
   await s.ensure(s.conn(), '5')
   assert.equal(await s.restore(s.conn(), { key: '5', threadId: 101 }), undefined)
   assert.deepEqual(s.calls, [])
   assert.deepEqual(s.saved, [])
+})
+
+for (const method of ['send', 'closeTopic']) {
+  test(`Topics: Access restored during ${method} reopens without creating a second live Topic`, async () => {
+    const s = bench()
+    await s.ensure(s.conn(), '5')
+    s.conn().paired[0].access = { botIds: [], roomIds: [] }
+    const original = s.handle[method]
+    s.handle[method] = async (...args) => {
+      s.conn().paired[0].access = 'all'
+      return original(...args)
+    }
+    await s.ensure(s.conn(), '5')
+    await s.ensure(s.conn(), '5')
+    const live = Object.entries(s.chat().topics).filter(([, topic]) => !topic.closed && topic.replacedBy === undefined)
+    assert.deepEqual(live.map(([id]) => Number(id)), [101], 'restoring Access during closure must leave only the original Topic live')
+    assert.deepEqual(s.calls.filter(([kind]) => kind === 'reopen'), [['reopen', 101]])
+    assert.equal(s.calls.filter(([kind]) => kind === 'create').length, 1)
+  })
+}
+
+test('Topics: a runner removed during the notice send stops the sweep without further writes', async () => {
+  const s = bench()
+  await s.ensure(s.conn(), '5')
+  s.conn().paired[0].access = { botIds: [], roomIds: [] }
+  const send = s.handle.send
+  const saves = s.saved.length
+  s.handle.send = async (...args) => { s.disconnect(); return send(...args) }
+  await assert.doesNotReject(s.ensure(s.conn(), '5'), 'a runner removed during the notice must stop quietly')
+  assert.equal(s.saved.length, saves, 'the stopped sweep must not write further state')
+  assert.deepEqual(s.calls, [['create'], ['notice', 101, 'topicRevoked: Chief']])
+  assert.equal(s.chat().topics[101].notified, undefined)
+  assert.equal(s.chat().topics[101].closed, undefined)
+})
+
+test('Topics: restore does not replace queued output whose Access was revoked', async () => {
+  let place
+  const s = bench({ deliverable: (conn, address, target) => place.deliverable(conn, address, { target }) })
+  await s.ensure(s.conn(), '5')
+  place = setup([s.conn()]).place
+  s.conn().paired[0].access = { botIds: [], roomIds: [] }
+  assert.equal(await s.restore(s.conn(), { key: '5', kind: 'direct', threadId: 101 }), undefined)
+  assert.deepEqual(s.calls, [['create']], 'revoked queued output must not create a replacement Topic')
+  assert.equal(s.chat().topics[101].replacedBy, undefined)
+  assert.equal(s.saved.length, 1)
+})
+
+test('Topics: a missing Topic reopened in the creation phase is replaced once', async () => {
+  const events = []
+  const s = bench({ replaced: [(...args) => { events.push(args) }] })
+  await s.ensure(s.conn(), '5')
+  s.conn().paired[0].access = { botIds: [], roomIds: [] }
+  const close = s.handle.closeTopic
+  s.handle.closeTopic = async (...args) => {
+    s.conn().paired[0].access = 'all'
+    return close(...args)
+  }
+  s.handle.reopenTopic = async chat => {
+    s.calls.push(['reopen', chat.threadId])
+    throw Object.assign(new Error('Topic missing'), { topicMissing: true })
+  }
+  await s.ensure(s.conn(), '5')
+  await s.ensure(s.conn(), '5')
+  assert.deepEqual(s.calls.filter(([kind]) => kind === 'reopen'), [['reopen', 101]])
+  assert.equal(s.chat().topics[101].replacedBy, 102)
+  assert.deepEqual(s.chat().topics[102].target, { botId: 'a' })
+  assert.equal(s.calls.filter(([kind]) => kind === 'create').length, 2)
+  assert.deepEqual(events, [['c1', '5', 101, 102]])
 })
