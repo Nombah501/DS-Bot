@@ -1,8 +1,8 @@
 // IM: talk to Bots from chat apps. A connection is one IM bot account bound to a Bot;
 // direct chats reach that Bot, platform group chats can be bound to a DS Bot group.
 // The platform adapters (im/platforms/) own the wire; placement.js decides where output
-// goes; cards.js keeps the Card journal; delivery.js owns queued sends. This
-// module owns pairing and Card answers. Only the dsh holding the team lock connects.
+// goes; cards.js keeps the Card journal; card-kinds.js owns DSH-sourced Cards;
+// delivery.js owns queued sends. This module owns pairing and event routing.
 import { randomBytes, randomUUID } from 'node:crypto'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -14,6 +14,7 @@ import { cleanAccess, migrateTopics, privateTopicCreator, topicRestorer } from '
 import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
+import { cardKinds } from './card-kinds.js'
 import { delivery } from './delivery.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
@@ -250,65 +251,17 @@ export function install(rt) {
     await stopTarget(conn, record.chat, record.target, textForPerson(conn, sender))
   }
 
-  const questionById = (id) => {
-    for (const [sessionId, question] of Object.entries(state.questions ?? {})) {
-      if (question.id === id) return { sessionId, question }
-    }
-    return undefined
-  }
-  const answerQuestionCard = async (conn, chat, cardKey, labels, sender, action) => {
-    const text = textForPerson(conn, sender)
-    const held = cards.open(conn, chat, cardKey)
-    if (held === undefined) return false
-    const found = questionById(held.cardKey.slice(2))
-    if (found === undefined) {
-      await sendCardReply(conn, chat, text('stale'), action)
-      return true
-    }
-    const valid = labels.filter(label => (found.question.options ?? []).some(option => option.label === label))
-    if (valid.length === 0) return false
-    try {
-      await rt.answerQuestion(found.sessionId, found.question.id, { selected: valid })
-      await cards.settle(conn, held.cardKey, valid.join(', '))
-    } catch (error) {
-      if (error?.code === 'bot/stale') {
-        await cards.claim(conn, held.cardKey, text('answered'))
-        await sendCardReply(conn, chat, text('stale'), action)
-        await cards.edits(conn)
-        return true
-      }
-      throw error
-    }
-    return true
-  }
-  const answerApprovalCard = async (conn, chat, cardKey, choice, sender, action) => {
-    const text = textForPerson(conn, sender)
-    const held = cards.open(conn, chat, cardKey, action)
-    if (held === undefined) return false
-    if (held.entry.receiverUserId !== undefined && (
-      sender?.id !== held.entry.receiverUserId
-      || (action !== undefined && (action.ephemeralMessageId !== held.entry.ephemeralMessageId || action.receiverUserId !== held.entry.receiverUserId))
-    )) {
-      await sendCardReply(conn, chat, text('privateOnly'), action)
-      return true
-    }
-    try {
-      rt.answerApproval(held.cardKey.slice(2), choice)
-      await cards.settle(conn, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
-    } catch (error) {
-      if (error?.code === 'bot/stale') {
-        await sendCardReply(conn, chat, text('stale'), action)
-        return true
-      }
-      throw error
-    }
-    return true
-  }
   const sendCardReply = async (conn, chat, body, action) => {
     // Message replies have no action; even on callback-capable platforms this is optional.
     if (imPlatform(conn.platform)?.callbackAnswer === true && typeof action?.answer === 'function') return action.answer(body)
     return sendText(conn, chat, body)
   }
+  const kinds = cardKinds(rt, {
+    cards, place, connections,
+    handleOf: id => runners.get(id)?.handle,
+    running: id => runners.has(id),
+    sendText, textForPerson,
+  })
 
   const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
 
@@ -385,36 +338,7 @@ export function install(rt) {
       }
       return
     }
-    if (NUMBERS.test(body)) {
-      const picked = body.trim().split(/\s+/).map(Number)
-      // The newest open question or approval: a bare number answers whatever arrived last.
-      const held = cards.newest(conn, msg.chat, cardKey => cardKey.startsWith('q:') || cardKey.startsWith('a:'))
-      const denied = held !== undefined && !place.may(conn, msg.sender.id, held.entry.target)
-      // Anything that does not clearly answer the newest open card — a stale
-      // source, an out-of-range pick, several picks on a single choice — is a
-      // normal message for the Bot, never swallowed and never 'stale'.
-      if (held !== undefined && held.cardKey.startsWith('q:')) {
-        const found = questionById(held.cardKey.slice(2))
-        if (found !== undefined) {
-          const options = found.question.options ?? []
-          const inRange = picked.length > 0 && (found.question.multiSelect === true || picked.length === 1)
-            && picked.every(index => options[index - 1] !== undefined)
-          if (inRange && denied) {
-            await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
-            return
-          }
-          if (inRange && await answerQuestionCard(conn, msg.chat, held.cardKey, picked.map(index => options[index - 1].label), msg.sender)) return
-        }
-      } else if (held !== undefined && held.cardKey.startsWith('a:')
-        && picked.length === 1 && (picked[0] === 1 || picked[0] === 2)
-        && rt.approvalsView().some(entry => `a:${entry.id}` === held.cardKey)) {
-        if (denied) {
-          await sendCardReply(conn, msg.chat, text(held.entry.target === undefined ? 'stale' : 'denied'))
-          return
-        }
-        if (await answerApprovalCard(conn, msg.chat, held.cardKey, picked[0] === 1 ? 'allow' : 'reject', msg.sender)) return
-      }
-    }
+    if (NUMBERS.test(body) && await kinds.number(conn, msg)) return
     if (target !== undefined && !place.may(conn, msg.sender.id, target)) {
       await sendText(conn, msg.chat, text('denied'))
       return
@@ -488,127 +412,21 @@ export function install(rt) {
       await cards.edits(conn)
       return
     }
-    if (imPlatform(conn.platform)?.topics === true) {
-      const key = data.startsWith('m:') ? `q:${cardKey.slice(2)}` : cardKey
-      const target = cards.open(conn, chat, key, action)?.entry.target
-      if (!place.may(conn, action.sender.id, target)) {
-        await sendCardReply(conn, chat, text(target === undefined ? 'stale' : 'denied'), action)
-        return
-      }
-    }
-    if (data.startsWith('m:') && cut > 2 && imPlatform(conn.platform)?.richCards === true) {
-      const key = `q:${cardKey.slice(2)}`
-      const held = cards.open(conn, chat, key)
-      const found = questionById(cardKey.slice(2))
-      const handle = runners.get(conn.id)?.handle
-      if (found?.question.multiSelect !== true || held?.entry.card === undefined || handle === undefined) {
-        await sendCardReply(conn, chat, text('stale'), action)
-        return
-      }
-      const { entry } = held
-      if (choice === 'done') {
-        const selected = entry.card.options.filter(option => option.checked === true).map(option => option.label)
-        if (selected.length === 0) {
-          await sendCardReply(conn, chat, text('selectOne'), action)
-          return
-        }
-        if (!(await answerQuestionCard(conn, chat, key, selected, action.sender, action))) await sendCardReply(conn, chat, text('stale'), action)
-        return
-      }
-      const option = /^\d+$/.test(choice) ? entry.card.options[Number(choice)] : undefined
-      if (option?.checked === undefined || option.data !== data) return
-      option.checked = !option.checked
-      await cards.redraw(conn, chat, entry)
-      return
-    }
-    if (data.startsWith('q:') && cut > 2) {
-      const found = questionById(cardKey.slice(2))
-      const label = found?.question.options?.[Number(choice)]?.label
-      if (label === undefined) {
-        await sendCardReply(conn, chat, text('stale'), action)
-        return
-      }
-      if (!(await answerQuestionCard(conn, chat, cardKey, [label], action.sender, action))) await sendCardReply(conn, chat, text('stale'), action)
-      return
-    }
-    if (data.startsWith('a:') && cut > 2) {
-      if (choice === 'allow' || choice === 'reject') {
-        if (!(await answerApprovalCard(conn, chat, cardKey, choice, action.sender, action))) await sendCardReply(conn, chat, text('stale'), action)
-      }
-    }
+    await kinds.press(conn, action)
   }
 
-  // ------------------------------------------------------------------ cards
-  const cardText = {
-    question: (bot, question, text) => {
-      const options = (question.options ?? []).map((option, index) => `${index + 1}. ${option.label}${option.description ? ` — ${option.description}` : ''}`).join('\n')
-      const hint = question.multiSelect === true ? text('numbersMulti') : text('numbers')
-      return `${text('question', { bot })}${question.question}${question.detail ? `\n${question.detail}` : ''}\n${options}\n(${hint})`
-    },
-    approval: (bot, entry, text) => `${text('approval', { bot })}${entry.tool}${entry.reason ? ` — ${entry.reason}` : ''}${entry.detail?.text ? `\n${entry.detail.text}` : ''}${entry.detail?.code ? `\n${entry.detail.code}` : ''}`,
-  }
-  const cardButtons = {
-    question: (question) => (question.multiSelect === true ? undefined : (question.options ?? []).map((option, index) => ({ data: `q:${question.id}:${index}`, label: option.label }))),
-    multiSelect: (question, text) => [
-      ...(question.options ?? []).map((option, index) => ({ data: `m:${question.id}:${index}`, label: option.label, checked: false })),
-      { data: `m:${question.id}:done`, label: text('done'), submit: true },
-    ],
-    approval: (id, text) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
-  }
-
-  const diffCards = async () => {
+  const syncCards = async () => {
     if (rt.readOnly() !== undefined) return
-    for (const conn of Object.values(connections())) {
-      const runner = runners.get(conn.id)
-      if (runner === undefined) continue
-      await cards.load(conn.id)
-      // Questions: one card per open question id, sent to the Bot's chats.
-      for (const [sessionId, question] of Object.entries(state.questions ?? {})) {
-        const cardKey = `q:${question.id}`
-        if (cards.sent(conn.id, cardKey)) continue
-        const botId = rt.chatOwners.get(sessionId) ?? rt.pastOwners.get(sessionId)?.botId
-        const bot = rt.botOf(botId)
-        if (bot === undefined) continue
-        const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.question(question) : undefined
-        await cards.send(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => cardText.question(bot.name, question, text), buttons,
-          text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
-      }
-      // Secret requests: text only — the key is typed on the computer or phone.
-      for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
-        const bot = rt.botOf(botId)
-        if (bot === undefined) continue
-        for (const request of list) {
-          const cardKey = `s:${request.id}`
-          if (request.status !== 'pending' || cards.sent(conn.id, cardKey)) continue
-          await cards.send(conn, cardKey, place.places(conn, { botId }, request.sessionId, 'card'), text => text('secretAsk', { bot: bot.name, name: request.name }))
-        }
-      }
-      // Views awaiting a reply: text form only.
-      for (const [sessionId, view] of Object.entries(state.views ?? {})) {
-        const cardKey = `v:${view.id}`
-        if (cards.sent(conn.id, cardKey)) continue
-        const botId = rt.chatOwners.get(sessionId)
-        const bot = rt.botOf(botId)
-        if (bot === undefined) continue
-        const form = viewCardText({ title: view.title, view: view.view })
-        await cards.send(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => `${text('viewShow', { bot: bot.name })}${form !== '' ? `\n${form}` : view.title ? `\n${view.title}` : ''}`)
-      }
-    }
+    for (const conn of Object.values(connections())) await kinds.sync(conn)
   }
 
   // Whether the thing a Card asks about still waits for an answer.
   const sourceOpen = (conn) => {
-    const openIds = new Set(Object.values(state.questions ?? {}).map(question => `q:${question.id}`))
-    const openSecret = new Set(Object.values(state.secretRequests ?? {}).flat().filter(entry => entry.status === 'pending').map(entry => `s:${entry.id}`))
-    const openViews = new Set(Object.values(state.views ?? {}).map(view => `v:${view.id}`))
-    return (cardKey, entries) => cardKey.startsWith('q:') ? openIds.has(cardKey)
-      : cardKey.startsWith('a:') ? rt.approvalsView().some(entry => `a:${entry.id}` === cardKey)
-        : cardKey.startsWith('s:') ? openSecret.has(cardKey)
-          : cardKey.startsWith('v:') ? openViews.has(cardKey)
-            : cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
-              ? entries.some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
-                && statusData(rt, entry.target, textForChat(conn, entry.chatKey), statusSteps).active)
-              : false
+    const open = kinds.sourceOpen(conn)
+    return (cardKey, entries) => cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
+      ? entries.some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
+        && statusData(rt, entry.target, textForChat(conn, entry.chatKey), statusSteps).active)
+      : open(cardKey)
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -733,7 +551,7 @@ export function install(rt) {
         }, 1000)
         runner.privateTimer.unref?.()
       }
-      await diffCards()
+      await syncCards()
     } catch (error) {
       if (runners.get(conn.id) === runner) await stop(conn.id)
       setStatus(conn.id, { state: 'error', error: String(error?.message ?? error).slice(0, 300), at: Date.now() })
@@ -1034,7 +852,7 @@ export function install(rt) {
     const result = await endpoints[endpoint]?.(body ?? {})
     if (result === undefined) throw new Error(`Unknown endpoint ${endpoint}`)
     void sync()
-    void diffCards()
+    void syncCards()
     return result
   }
 
@@ -1105,39 +923,10 @@ export function install(rt) {
     }
   })
 
-  rt.onApproval((kind, data) => {
-    if (kind === 'open') {
-      void (async () => {
-        for (const conn of Object.values(connections())) {
-          const runner = runners.get(conn.id)
-          if (runner === undefined) continue
-          const bot = rt.botOf(data.botId)
-          const targets = place.places(conn, data.roomId === undefined ? { botId: data.botId } : { roomId: data.roomId }, data.sessionId, 'card')
-          const buttons = imPlatform(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
-          const initiator = await place.initiatorOf(conn, data.sessionId)
-          await cards.send(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
-            text => ({
-              text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),
-              details: data.detail,
-              options: cardButtons.approval(data.id, text).map((option, index) => ({ ...option, style: index === 0 ? 'success' : 'danger' })),
-            }), initiator)
-        }
-      })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
-      return
-    }
-    const conns = Object.values(connections())
-    for (const conn of conns) {
-      cards.claim(conn, `a:${data.id}`, text => data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
-    }
-    void (async () => {
-      for (const conn of conns) {
-        await cards.edits(conn)
-      }
-    })().catch(() => {})
-  })
+  rt.onApproval((kind, data) => { void kinds.approval(kind, data) })
 
   rt.onSaved(() => {
-    void diffCards().then(cards.settleGone).catch(() => {})
+    void syncCards().then(cards.settleGone).catch(() => {})
     void sync().catch(() => {})
   })
 
@@ -1162,23 +951,8 @@ export function install(rt) {
 
   const imView = () => ({ connections: Object.values(connections()).map(viewOf), platforms: IM_PLATFORMS.filter(platform => adaptersFor().includes(platform.id)).map(platform => platform.id) })
   const imStatusView = () => Object.fromEntries([...statuses.entries()].map(([id, status]) => [id, { state: status.state, ...(status.error !== undefined ? { error: status.error } : {}), at: status.at }]))
-  const imQuestionClaimed = (question, answer) => {
-    const selected = (answer?.selected ?? []).filter(label => question.options?.some(option => option.label === label))
-    const labels = question.multiSelect === true ? [...new Set(selected)] : selected.slice(0, 1)
-    const rollbacks = []
-    for (const conn of Object.values(connections())) {
-      if (imPlatform(conn.platform)?.richCards !== true) continue
-      const rollback = cards.claim(conn, `q:${question.id}`, labels.length ? labels.join(', ') : text => text('answered'), labels)
-      if (rollback !== undefined) rollbacks.push(rollback)
-    }
-    return () => Promise.all(rollbacks.map(rollback => rollback()))
-  }
-  const imQuestionAnswered = async () => {
-    for (const conn of Object.values(connections())) {
-      if (imPlatform(conn.platform)?.richCards !== true) continue
-      await cards.edits(conn)
-    }
-  }
+  const imQuestionClaimed = kinds.questionClaimed
+  const imQuestionAnswered = kinds.questionAnswered
 
   Object.assign(rt, { imView, imStatusView, imViaView, imEndpoint, imQuestionClaimed, imQuestionAnswered })
 }

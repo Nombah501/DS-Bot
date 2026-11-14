@@ -51,7 +51,7 @@ for (const [language, locale, notice, preference] of [
   ['en', 'en', 'Только инициатор может ответить на эту карточку.', 'ru'],
   ['ru', 'zh-CN', 'Only the Initiator can answer this card.', 'en'],
 ]) {
-  test(`S1: another paired person cannot answer a Private card by button or number in ${preference ?? language}`, async t => {
+  test(`S1: another paired person's Private-card press is refused and their number reaches the Bot in ${preference ?? language}`, async t => {
     const s = await startBridge(t, { locale })
     ephemeral(s)
     s.message('hello', { from: { id: 10, first_name: 'Bob' } })
@@ -69,10 +69,9 @@ for (const [language, locale, notice, preference] of [
     press(s, sent, 10, {}, language)
     await s.request('answerCallbackQuery', p => p.callback_query_id === 'private-10' && p.text === notice)
     assert.equal(s.calls.slice(beforePress).some(c => c.method === 'sendMessage' && c.params.text === notice), false)
-    const after = s.calls.length
     s.message('@fakebot 1', { chat: group, from: { id: 10, first_name: 'Bob', language_code: 'ru' } })
-    await s.request('sendMessage', p => p.text === (preference === 'en' ? 'Only the Initiator can answer this card.' : 'Только инициатор может ответить на эту карточку.'), after)
-    assert.equal(s.prompts.length, 1)
+    await until(() => s.prompts.some(prompt => prompt.content?.[0]?.text === '1'))
+    assert.equal(s.prompts.length, 2)
     assert.equal(s.rt.approvalsView().length, 1)
     press(s, sent)
     assert.deepEqual(await outcome, ['allowed-once'])
