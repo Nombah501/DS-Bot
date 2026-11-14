@@ -53,10 +53,26 @@ export default {
         method: options.method ?? 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bot ${token}` },
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: options.signal,
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok) throw errorOf(body, response.status)
+      options.signal?.throwIfAborted()
       return body
+    }
+
+    const channelTitles = new Map()
+    const channelTitle = (key) => {
+      if (!channelTitles.has(key)) {
+        // Share the lookup even when another message arrives before it settles.
+        channelTitles.set(key, rest(`/channels/${key}`, { method: 'GET', signal: AbortSignal.timeout(5_000) })
+          .then(channel => String(channel.name ?? ''))
+          .catch(error => {
+            if (error?.permanent !== true) channelTitles.delete(key)
+            return ''
+          }))
+      }
+      return channelTitles.get(key)
     }
 
     const send = (packet) => {
@@ -80,10 +96,11 @@ export default {
       if (data.author?.bot === true) return
       const direct = data.guild_id === undefined
       const mentioned = direct ? false : (data.mentions ?? []).some(user => String(user.id) === self.id)
+      const key = String(data.channel_id)
       const chat = {
-        key: String(data.channel_id),
+        key,
         kind: direct ? 'direct' : 'group',
-        title: data.channel?.name ?? direct ? String(data.author?.username ?? '') : '',
+        title: direct ? String(data.author?.username ?? '') : await channelTitle(key),
       }
       const images = []
       const files = []
