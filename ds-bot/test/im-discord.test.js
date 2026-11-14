@@ -93,10 +93,24 @@ test('a DM is direct, a guild message is a mention when the bot is in mentions',
   fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 4, d: { id: '12', channel_id: 'g1', guild_id: 'w1', content: 'noise', author: { id: 'u2', username: 'Yan' }, mentions: [] } })
   await until(() => messages.length === 3)
   assert.equal(messages[0].chat.kind, 'direct')
+  assert.equal(messages[0].chat.title, 'Fei')
   assert.equal(messages[1].chat.kind, 'group')
+  assert.equal(messages[1].chat.title, '')
   assert.equal(messages[1].mentioned, true)
   assert.equal(messages[1].text, 'hey  ping')
   assert.equal(messages[2].mentioned, false)
+})
+
+test('a guild message uses its channel name as the chat title', async (t) => {
+  const fake = await fakeDiscord()
+  const messages = []
+  const handle = discord.connect({ token: 'tok' }, env(fake), { onMessage: async msg => { messages.push(msg) }, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  const ws = await until(() => fake.sockets[0])
+  await until(() => fake.packets.some(packet => packet.op === 2))
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id: '10', channel_id: 'g1', guild_id: 'w1', channel: { name: 'general' }, content: 'hello', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 1)
+  assert.equal(messages[0].chat.title, 'general')
 })
 
 test('a component press is deferred and reports the action', async (t) => {

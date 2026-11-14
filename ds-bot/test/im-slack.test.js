@@ -118,6 +118,25 @@ test('a block_actions envelope reports the action', async (t) => {
   await until(() => actions.length === 1)
   assert.equal(actions[0].data, 'q:q1:0')
   assert.equal(actions[0].messageId, '9.9')
+  assert.equal(actions[0].chat.kind, 'direct')
+})
+
+test('a block_actions envelope in C1 reports a group action', async (t) => {
+  const fake = await fakeSlack()
+  const actions = []
+  const handle = slack.connect(FIELDS, env(fake), { onMessage: () => {}, onAction: async action => { actions.push(action) }, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  const ws = await until(() => fake.sockets[0])
+  await until(() => fake.sockets.length === 1)
+  fake.push(ws, {
+    envelope_id: 'ev1', type: 'interactive',
+    payload: { type: 'block_actions', channel: { id: 'C1' }, user: { id: 'U2', name: 'Fei' }, actions: [{ action_id: 'b0', value: 'q:q1:0' }], message: { ts: '9.9' } },
+  })
+  await until(() => actions.length === 1)
+  assert.equal(actions[0].chat.kind, 'group')
+  assert.equal(actions[0].chat.key, 'C1')
+  assert.equal(actions[0].data, 'q:q1:0')
+  assert.equal(actions[0].messageId, '9.9')
 })
 
 test('send posts blocks with buttons, edit calls chat.update', async (t) => {

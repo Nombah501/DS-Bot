@@ -83,8 +83,9 @@ export default {
       if (payload.type !== 'block_actions') return
       const action = payload.actions?.[0]
       if (action === undefined) return
+      const key = String(payload.channel?.id ?? '')
       await handlers.onAction({
-        chat: { key: String(payload.channel?.id ?? ''), kind: 'direct', title: '' },
+        chat: { key, kind: key.startsWith('D') ? 'direct' : 'group', title: '' },
         sender: { id: String(payload.user?.id ?? ''), name: String(payload.user?.name ?? payload.user?.id ?? '') },
         data: String(action.value ?? action.action_id ?? ''),
         messageId: String(payload.message?.ts ?? ''),

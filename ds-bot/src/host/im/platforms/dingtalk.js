@@ -101,7 +101,8 @@ export default {
       await handlers.onMessage({
         chat: { key, kind: direct ? 'direct' : 'group', title: '' },
         sender: { id: sender, name: String(data.senderNick ?? sender) },
-        text, images: [], files: [],
+        // DingTalk puts the bot mention first but does not supply its display name.
+        text: mentioned ? text.replace(/^(?:@\S+\s*)+/, '') : text, images: [], files: [],
         mentioned, messageId: String(data.msgId ?? ''),
       })
     }

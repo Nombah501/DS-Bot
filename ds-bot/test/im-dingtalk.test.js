@@ -105,6 +105,32 @@ test('system pings get a pong, a single chat and an @ group message land, every 
   assert.equal(messages[2].mentioned, false)
 })
 
+for (const [name, conversationType, isInAtList, content, expected] of [
+  ['a mentioned group command drops the leading bot mention', '2', true, '@Bot /stop', '/stop'],
+  ['a mentioned group Card answer drops the leading bot mention', '2', true, '@Bot 2', '2'],
+  ['a mentioned group message drops consecutive leading mentions', '2', true, ' \t@Bot @Person /stop', '/stop'],
+  ['a mentioned group message keeps mentions after the first other word', '2', true, '@Bot hello @Person', 'hello @Person'],
+  ['a mentioned group message without a leading mention keeps its text', '2', true, 'hello @Person', 'hello @Person'],
+  ['a direct message keeps its leading mention', '1', true, '@Bot /stop', '@Bot /stop'],
+  ['a group message not addressed to the bot keeps its leading mention', '2', false, '@Person /stop', '@Person /stop'],
+  ['a group message with no at-list flag keeps its leading mention', '2', undefined, '@Person 2', '@Person 2'],
+  ['a group message with a non-boolean at-list flag keeps its leading mention', '2', 'true', '@Person 2', '@Person 2'],
+]) {
+  test(name, async (t) => {
+    const fake = await fakeDingtalk()
+    const messages = []
+    const handle = dingtalk.connect(FIELDS, env(fake), { onMessage: async msg => { messages.push(msg) }, onAction: () => {}, onStatus: () => {} })
+    t.after(() => { handle.stop(); fake.close() })
+    const ws = await until(() => fake.sockets[0])
+    await until(() => fake.acks.includes('sys1'))
+    fake.push(ws, callback({ conversationType, conversationId: 'g1', senderStaffId: 'u1', msgtype: 'text', msgId: 'm1', isInAtList, text: { content } }))
+    await until(() => messages.length === 1)
+    assert.equal(messages[0].text, expected)
+    assert.equal(messages[0].chat.kind, conversationType === '1' ? 'direct' : 'group')
+    assert.equal(messages[0].mentioned, conversationType === '2' && isInAtList === true)
+  })
+}
+
 test('send replies through the sessionWebhook when live, else the robot API', async (t) => {
   const fake = await fakeDingtalk()
   const messages = []

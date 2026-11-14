@@ -83,7 +83,7 @@ export default {
       const chat = {
         key: String(data.channel_id),
         kind: direct ? 'direct' : 'group',
-        title: data.channel?.name ?? direct ? String(data.author?.username ?? '') : '',
+        title: data.channel?.name ?? (direct ? String(data.author?.username ?? '') : ''),
       }
       const images = []
       const files = []
