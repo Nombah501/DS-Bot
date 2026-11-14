@@ -47,76 +47,125 @@ export function accessTargets(person, state) {
   ].filter(target => allows(person, target))
 }
 
-export function privateTopicCreator(rt, handleOf, textForChat) {
-  const pending = new Map()
-  return function ensurePrivateTopics(conn, chatKey) {
-    const key = JSON.stringify([conn.id, chatKey])
-    if (pending.has(key)) return pending.get(key)
+export function topics(rt, { connections, handleOf, textForChat, deliverable, replaced = [], platformOf = imPlatform }) {
+  const ensuring = new Map()
+  const replacing = new Map()
+  const chatOf = (connId, chatKey) => connections()[connId]?.chats?.[chatKey]
+  const nameOf = target => (target.botId !== undefined ? rt.botOf(target.botId) : rt.roomOf(target.roomId))?.name
+  const privateChat = (connId, chatKey) => platformOf(connections()[connId]?.platform)?.topics === true && chatOf(connId, chatKey)?.kind === 'direct'
+  // Plans contain values, never records from the state graph that an await can detach.
+  const plan = (connId, chatKey, threadId) => {
+    const conn = connections()[connId]
+    const chat = conn?.chats?.[chatKey]
+    const topic = chat?.topics?.[threadId]
+    if (topic === undefined) return undefined
+    const name = nameOf(topic.target)
+    return {
+      target: { ...topic.target }, name, previousName: topic.name,
+      closed: topic.closed, notified: topic.notified, replacedBy: topic.replacedBy,
+      reason: name === undefined ? 'topicDeleted' : !allows(conn.paired?.find(person => person.id === chat.personId), topic.target) ? 'topicRevoked' : undefined,
+    }
+  }
+  const update = async (connId, chatKey, change) => {
+    if (!change(chatOf(connId, chatKey))) return false
+    await rt.save()
+    return true
+  }
+  const changeTopic = (connId, chatKey, threadId, change) => update(connId, chatKey, chat => {
+    const topic = chat?.topics?.[threadId]
+    if (topic === undefined) return false
+    change(topic)
+    return true
+  })
+  const record = (connId, chatKey, threadId, target, name, oldThreadId) => update(connId, chatKey, chat => {
+    if (chat === undefined) return false
+    chat.topics ??= {}
+    chat.topics[threadId] = { target, name, at: Date.now() }
+    if (oldThreadId !== undefined && chat.topics[oldThreadId] !== undefined) chat.topics[oldThreadId].replacedBy = threadId
+    return true
+  })
+  const replace = (connId, chatKey, threadId) => {
+    const key = JSON.stringify([connId, chatKey, threadId])
+    if (replacing.has(key)) return replacing.get(key)
     const run = (async () => {
-      const chat = conn.chats?.[chatKey]
-      const handle = handleOf(conn.id)
-      if (imPlatform(conn.platform)?.topics !== true || chat?.kind !== 'direct' || handle === undefined) return
-      const person = conn.paired?.find(person => person.id === chat.personId)
-      for (const [threadId, topic] of Object.entries(chat.topics ?? {})) {
-        if (!topicLive(topic)) continue
-        const name = (topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId))?.name
-        const address = { key: chatKey, kind: chat.kind, threadId: Number(threadId) }
-        const reason = name === undefined ? 'topicDeleted' : !allows(person, topic.target) ? 'topicRevoked' : undefined
-        if (reason !== undefined) {
-          if (!topic.notified) {
-            await handle.send(address, { text: textForChat(conn, chatKey)(reason, { name: topic.name }) })
-            topic.notified = true
-            await rt.save()
-          }
-          await handle.closeTopic(address)
-          topic.closed = true
-          await rt.save()
-          continue
-        }
-        if (name !== undefined && topic.name !== name) {
-          await handle.renameTopic({ key: chatKey, kind: chat.kind, threadId: Number(threadId) }, name)
-          topic.name = name
-          await rt.save()
-        }
-      }
-      if (conn.account?.hasTopicsEnabled !== true || chat.kind !== 'direct' || person === undefined) return
-      for (const target of accessTargets(person, rt.state)) {
-        if (Object.values(chat.topics ?? {}).some(topic => topicLive(topic) && sameTarget(topic.target, target))) continue
-        const name = (target.botId !== undefined ? rt.botOf(target.botId) : rt.roomOf(target.roomId))?.name
-        const topic = await handle.createTopic({ key: chatKey, kind: chat.kind }, name)
-        // Pairing/access can change while the network is in flight.
-        if (!allows(conn.paired?.find(entry => entry.id === person.id), target)) continue
-        chat.topics ??= {}
-        chat.topics[topic.threadId] = { target, name, at: Date.now() }
-        await rt.save()
-      }
-    })().finally(() => pending.delete(key))
-    pending.set(key, run)
+      const next = plan(connId, chatKey, threadId)
+      if (next === undefined) return undefined
+      if (next.replacedBy !== undefined) return next.replacedBy
+      const created = await handleOf(connId).createTopic({ key: chatKey, kind: 'direct' }, next.name)
+      if (!await record(connId, chatKey, created.threadId, next.target, next.name, threadId)) return undefined
+      for (const subscriber of replaced) await subscriber(connId, chatKey, threadId, created.threadId)
+      return created.threadId
+    })().finally(() => replacing.delete(key))
+    replacing.set(key, run)
     return run
   }
-}
-
-export function topicRestorer(rt, handleOf, deliverable) {
-  const pending = new Map()
-  return async (conn, address) => {
-    const chat = conn.chats?.[address.key]
-    const topic = chat?.topics?.[address.threadId]
-    const handle = handleOf(conn.id)
-    if (imPlatform(conn.platform)?.topics !== true || chat?.kind !== 'direct' || topic === undefined || topic.closed || handle === undefined) return undefined
-    if (topic.replacedBy !== undefined) return topic.replacedBy
-    if (!deliverable(conn, address, topic.target)) return undefined
-    const target = topic.target.botId !== undefined ? rt.botOf(topic.target.botId) : rt.roomOf(topic.target.roomId)
-    if (target === undefined) return undefined
-    const key = JSON.stringify([conn.id, address.key, address.threadId])
-    if (pending.has(key)) return pending.get(key)
-    const run = (async () => {
-      const created = await handle.createTopic({ key: address.key, kind: chat.kind }, target.name)
-      chat.topics[created.threadId] = { target: topic.target, name: target.name, at: Date.now() }
-      topic.replacedBy = created.threadId
-      await rt.save()
-      return created.threadId
-    })().finally(() => pending.delete(key))
-    pending.set(key, run)
-    return run
+  const reconcile = async (connId, chatKey, threadId) => {
+    const next = plan(connId, chatKey, threadId)
+    if (next === undefined || next.replacedBy !== undefined) return
+    const address = { key: chatKey, kind: 'direct', threadId }
+    if (next.closed) {
+      if (next.reason !== undefined) return
+      try {
+        await handleOf(connId).reopenTopic(address)
+      } catch (error) {
+        if (error?.topicMissing !== true) throw error
+        await replace(connId, chatKey, threadId)
+        return
+      }
+      await changeTopic(connId, chatKey, threadId, topic => { delete topic.closed; delete topic.notified })
+    } else if (next.reason !== undefined) {
+      if (!next.notified) {
+        await handleOf(connId).send(address, { text: textForChat(connections()[connId], chatKey)(next.reason, { name: next.previousName }) })
+        await changeTopic(connId, chatKey, threadId, topic => { topic.notified = true })
+      }
+      if (plan(connId, chatKey, threadId) === undefined) return
+      await handleOf(connId).closeTopic(address)
+      await changeTopic(connId, chatKey, threadId, topic => { topic.closed = true })
+      return
+    }
+    const current = plan(connId, chatKey, threadId)
+    if (current !== undefined && current.name !== undefined && current.previousName !== current.name) {
+      await handleOf(connId).renameTopic(address, current.name)
+      await changeTopic(connId, chatKey, threadId, topic => { topic.name = current.name })
+    }
+  }
+  const targets = (connId, chatKey) => {
+    const conn = connections()[connId]
+    const chat = conn?.chats?.[chatKey]
+    const person = conn?.paired?.find(person => person.id === chat?.personId)
+    return conn?.account?.hasTopicsEnabled === true && person !== undefined ? accessTargets(person, rt.state) : []
+  }
+  const needsTopic = (connId, chatKey, target) => targets(connId, chatKey).some(current => sameTarget(current, target))
+    && !Object.values(chatOf(connId, chatKey)?.topics ?? {}).some(topic => topicLive(topic) && sameTarget(topic.target, target))
+  return {
+    ensure(conn, chatKey) {
+      const connId = conn.id
+      const key = JSON.stringify([connId, chatKey])
+      if (ensuring.has(key)) return ensuring.get(key)
+      const run = (async () => {
+        if (!privateChat(connId, chatKey) || handleOf(connId) === undefined) return
+        for (const threadId of Object.keys(chatOf(connId, chatKey).topics ?? {})) await reconcile(connId, chatKey, Number(threadId))
+        for (const target of targets(connId, chatKey)) {
+          if (!privateChat(connId, chatKey) || !needsTopic(connId, chatKey, target)) continue
+          const name = nameOf(target)
+          const created = await handleOf(connId).createTopic({ key: chatKey, kind: 'direct' }, name)
+          // Access can be revoked in flight; record the Topic so the next sweep can close it.
+          await record(connId, chatKey, created.threadId, target, name)
+        }
+      })().finally(() => ensuring.delete(key))
+      ensuring.set(key, run)
+      return run
+    },
+    async restore(conn, address) {
+      const connId = conn.id
+      const next = plan(connId, address.key, address.threadId)
+      if (!privateChat(connId, address.key) || next === undefined || next.closed || handleOf(connId) === undefined) return undefined
+      if (next.replacedBy !== undefined) return next.replacedBy
+      if (next.name === undefined || !deliverable(connections()[connId], address, next.target)) return undefined
+      return replace(connId, address.key, address.threadId)
+    },
+    bind(connId, chatKey, threadId, target) {
+      return record(connId, chatKey, threadId, target, nameOf(target))
+    },
   }
 }

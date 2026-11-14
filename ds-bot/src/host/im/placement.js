@@ -29,6 +29,13 @@ function topicTarget(conn, address) {
 export function placement({ connections, store, botOf, roomOf }) {
   // A caller may hold a connection object that a save has since replaced.
   const fresh = conn => connections()[conn.id] ?? conn
+  const follow = (conn, address) => {
+    const current = fresh(conn)
+    if (!topicMode(current) || address.threadId === undefined) return
+    while (current.chats?.[address.key]?.topics?.[address.threadId]?.replacedBy !== undefined) {
+      address.threadId = current.chats[address.key].topics[address.threadId].replacedBy
+    }
+  }
 
   const targetIn = (conn, address) => {
     const saved = conn.chats?.[address.key]
@@ -104,6 +111,7 @@ export function placement({ connections, store, botOf, roomOf }) {
       const saved = originConn.chats?.[initiator.chatKey]
       const chat = { ...saved, key: initiator.chatKey, ...(initiator.threadId === undefined ? {} : { threadId: initiator.threadId }) }
       if (saved?.isForum === true && chat.threadId === undefined) chat.threadId = 1
+      follow(originConn, chat)
       const topic = saved?.topics?.[chat.threadId ?? (saved?.isForum ? 1 : undefined)]
       if (saved !== undefined && topicLive(topic)
         && targetIn(originConn, chat)?.botId === botId
@@ -155,13 +163,7 @@ export function placement({ connections, store, botOf, roomOf }) {
         .some(place => addressKey(place.chat) === addressKey(address))
     },
     /** Moves a queued address onto the Topic that replaced its own, in place. */
-    follow(conn, address) {
-      const current = fresh(conn)
-      if (!topicMode(current) || address.threadId === undefined) return
-      while (current.chats?.[address.key]?.topics?.[address.threadId]?.replacedBy !== undefined) {
-        address.threadId = current.chats[address.key].topics[address.threadId].replacedBy
-      }
-    },
+    follow,
     /** A Telegram message with this request id was sent to a Bot from `address`. */
     async asked(conn, requestId, sender, address) {
       const data = await store.of(conn.id)

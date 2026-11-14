@@ -6,7 +6,7 @@
 // Method capabilities are checked against every adapter by im-platforms.test.js.
 // `edit`/`typing`: update sent text / signal work in progress.
 // `richCards`: send and edit structured Cards; `privateCards`: send, edit and delete initiator-only copies.
-// `topics`: create, rename and close Topics; `forumAdmin`: check a person's forum rights.
+// `topics`: create, rename, close and reopen Topics; `forumAdmin`: check a person's forum rights.
 // `personLanguage`: retain sender language and support /lang; `callbackAnswer`: answer a button press.
 export const IM_PLATFORMS = [
   {

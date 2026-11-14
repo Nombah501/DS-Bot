@@ -145,6 +145,7 @@ A	ds-bot/test/cards.test.js
 A	ds-bot/test/chat-record.test.js
 M	ds-bot/test/diagnostics.test.js
 A	ds-bot/test/drafts.test.js
+A	ds-bot/test/forum-bind.test.js
 A	ds-bot/test/im-delivery.test.js
 M	ds-bot/test/im-dingtalk.test.js
 M	ds-bot/test/im-discord.test.js
@@ -182,6 +183,7 @@ A	ds-bot/test/telegram-settle-race.test.js
 A	ds-bot/test/telegram-status.test.js
 A	ds-bot/test/telegram-topic-lifecycle.test.js
 A	ds-bot/test/telegram-topics.test.js
+A	ds-bot/test/topics.test.js
 A	ds-bot/test/upstream-watch.test.js
 A	scripts/upstream-watch.cjs
 ```

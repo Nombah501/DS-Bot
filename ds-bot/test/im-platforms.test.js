@@ -11,7 +11,7 @@ const handleMethods = {
   typing: ['typing'],
   richCards: ['sendCard', 'editCard'],
   drafts: ['draft'],
-  topics: ['createTopic', 'renameTopic', 'closeTopic'],
+  topics: ['createTopic', 'renameTopic', 'closeTopic', 'reopenTopic'],
   privateCards: ['sendPrivateCard', 'editPrivateCard', 'deletePrivateCard'],
   forumAdmin: ['isAdmin'],
   statusPanel: ['sendStatusPanel', 'editStatusPanel', 'pinStatusPanel'],

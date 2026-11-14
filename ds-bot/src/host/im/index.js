@@ -10,7 +10,7 @@ import { replaceFile } from '../files.js'
 import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
-import { cleanAccess, migrateTopics, privateTopicCreator, topicRestorer } from './topics.js'
+import { cleanAccess, migrateTopics, topics } from './topics.js'
 import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
@@ -174,23 +174,29 @@ export function install(rt) {
   /** @type {Map<string, {handle:any, delivery:any, typing?:any, drafts?:any, panels?:any, privateTimer?:any}>} */
   const runners = new Map()
   const statuses = new Map()
-  const ensurePrivateTopics = privateTopicCreator(rt, id => runners.get(id)?.handle, textForChat)
-  const restoreTopic = topicRestorer(rt, id => runners.get(id)?.handle, (conn, address, target) => place.deliverable(conn, address, { target }))
+  const topicLifecycle = topics(rt, {
+    connections, handleOf: id => runners.get(id)?.handle, textForChat,
+    deliverable: (conn, address, target) => place.deliverable(conn, address, { target }),
+    replaced: [
+      (connId, chatKey, oldThreadId, threadId) => runners.get(connId)?.drafts?.moved(chatKey, oldThreadId, threadId),
+      (connId, chatKey, oldThreadId, threadId) => cards.moved(connId, chatKey, oldThreadId, threadId),
+      async (connId, chatKey, oldThreadId, threadId) => {
+        const data = await cardsOf(connId)
+        for (const panel of data.panels) {
+          if (panel.chat.key === chatKey && panel.chat.threadId === oldThreadId) {
+            panel.chat.threadId = threadId
+            delete panel.messageId
+          }
+        }
+        scheduleWrite(connId)
+      },
+    ],
+  })
+  const ensurePrivateTopics = topicLifecycle.ensure
   const recoverTopic = async (conn, chat) => {
-    const oldThreadId = chat.threadId
-    const threadId = await restoreTopic(conn, chat)
+    const threadId = await topicLifecycle.restore(conn, chat)
     if (threadId === undefined) return false
     chat.threadId = threadId
-    runners.get(conn.id)?.drafts?.moved(chat.key, oldThreadId, threadId)
-    await cards.moved(conn.id, chat.key, oldThreadId, threadId)
-    const data = await cardsOf(conn.id)
-    for (const panel of data.panels) {
-      if (panel.chat.key === chat.key && panel.chat.threadId === oldThreadId) {
-        panel.chat.threadId = threadId
-        delete panel.messageId
-      }
-    }
-    scheduleWrite(conn.id)
     return true
   }
   const setStatus = (id, next) => {
@@ -257,7 +263,7 @@ export function install(rt) {
     sendText, textForPerson,
   })
 
-  const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
+  const forumBind = forumBinder(rt, { connections, topics: topicLifecycle, handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
 
   const onMessage = (conn) => async (msg) => {
     if (!paired(conn, msg.sender.id)) {
