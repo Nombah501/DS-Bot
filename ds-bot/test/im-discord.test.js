@@ -137,6 +137,54 @@ test('a failed guild channel lookup keeps messages with an empty title and is ca
   assert.equal(fake.calls.filter(call => call.path === '/api/v10/channels/g1').length, 1)
 })
 
+test('a hung channel lookup times out without dropping the message and can retry', async (t) => {
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  t.mock.method(AbortSignal, 'timeout', () => timeout(20))
+  const fake = await fakeDiscord()
+  fake.replies['/api/v10/channels/g1'] = { result: { id: 'g1', name: 'general' } }
+  const messages = []
+  let lookups = 0
+  const options = env(fake)
+  options.fetch = (url, init) => {
+    if (url.endsWith('/channels/g1') && ++lookups === 1) {
+      return new Promise((_resolve, reject) => {
+        if (init?.signal?.aborted) { reject(init.signal.reason); return }
+        init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true })
+      })
+    }
+    return globalThis.fetch(url, init)
+  }
+  const handle = discord.connect({ token: 'tok' }, options, { onMessage: async msg => { messages.push(msg) }, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  const ws = await until(() => fake.sockets[0])
+  await until(() => fake.packets.some(packet => packet.op === 2))
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id: '10', channel_id: 'g1', guild_id: 'w1', content: 'hello', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 1, 10)
+  assert.deepEqual(messages.map(msg => [msg.chat.title, msg.text]), [['', 'hello']])
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 3, d: { id: '11', channel_id: 'g1', guild_id: 'w1', content: 'again', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 2)
+  assert.equal(messages[1].chat.title, 'general')
+  assert.equal(lookups, 2)
+})
+
+test('a transient channel lookup failure is retried on the next message', async (t) => {
+  const fake = await fakeDiscord()
+  fake.replies['/api/v10/channels/g1'] = { error: 503, description: 'Unavailable' }
+  const messages = []
+  const handle = discord.connect({ token: 'tok' }, env(fake), { onMessage: async msg => { messages.push(msg) }, onAction: () => {}, onStatus: () => {} })
+  t.after(() => { handle.stop(); fake.close() })
+  const ws = await until(() => fake.sockets[0])
+  await until(() => fake.packets.some(packet => packet.op === 2))
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 2, d: { id: '10', channel_id: 'g1', guild_id: 'w1', content: 'hello', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 1)
+  assert.equal(messages[0].chat.title, '')
+  fake.replies['/api/v10/channels/g1'] = { result: { id: 'g1', name: 'general' } }
+  fake.push(ws, { op: 0, t: 'MESSAGE_CREATE', s: 3, d: { id: '11', channel_id: 'g1', guild_id: 'w1', content: 'again', author: { id: 'u1', username: 'Fei' } } })
+  await until(() => messages.length === 2)
+  assert.equal(messages[1].chat.title, 'general')
+  assert.equal(fake.calls.filter(call => call.path === '/api/v10/channels/g1').length, 2)
+})
+
 test('a component press is deferred and reports the action', async (t) => {
   const fake = await fakeDiscord()
   const actions = []

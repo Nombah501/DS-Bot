@@ -53,9 +53,11 @@ export default {
         method: options.method ?? 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bot ${token}` },
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: options.signal,
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok) throw errorOf(body, response.status)
+      options.signal?.throwIfAborted()
       return body
     }
 
@@ -63,9 +65,12 @@ export default {
     const channelTitle = (key) => {
       if (!channelTitles.has(key)) {
         // Share the lookup even when another message arrives before it settles.
-        channelTitles.set(key, rest(`/channels/${key}`, { method: 'GET' })
+        channelTitles.set(key, rest(`/channels/${key}`, { method: 'GET', signal: AbortSignal.timeout(5_000) })
           .then(channel => String(channel.name ?? ''))
-          .catch(() => ''))
+          .catch(error => {
+            if (error?.permanent !== true) channelTitles.delete(key)
+            return ''
+          }))
       }
       return channelTitles.get(key)
     }
