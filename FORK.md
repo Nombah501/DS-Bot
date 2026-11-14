@@ -17,6 +17,15 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
 
+### In 0.3.6-tb.4
+
+- **One rule for Card answers:** a button and a number get the same reply in the same situation (no access, already answered, only the Initiator can answer). Another person's Private card no longer catches a number; it answers the older public Card or reaches the Bot. An approval closed while its Card was being sent no longer keeps live buttons. A Card found already answered is relabelled in each copy's own language.
+- **Chats saved reliably:** a chat's own fields are saved once per message from the record found at write time, so a state re-read in between no longer loses them; a paired group keeps its own title instead of the person's name.
+- **Topics:** no duplicate Topic after a state re-read, a Topic created while Access was being revoked is recorded and closed, and restoring Access reopens the closed Topic instead of creating a new one (new `reopenTopic`). When a deleted private Topic is replaced during a turn, the rest of the turn's output reaches the replacement.
+- **Messages:** `/status` answers on every platform (text without Stop where Cards are not rich); Access and binding are checked again right before a message reaches the Bot; `/lang` from a person just unpaired is ignored.
+- **Other platforms:** Discord group chats are titled with the channel name (one cached lookup per channel, bounded at 5 s); DingTalk drops the leading bot mention, so `@Bot /stop` and `@Bot 2` work; Slack presses report the right chat kind.
+- **Internals:** Card kinds, Chat record, Topic lifecycle and Inbound each live in one module; two upstream tests that asserted before their event now wait for it.
+
 ### In 0.3.6-tb.3
 
 - **Private `/status` while Telegram widgets are closed:** a private `/status` now answers like a group one — a snapshot Card with Stop while the Bot works, plain text when idle — instead of refreshing a pinned widget Telegram currently shows as unavailable. Existing pinned panels are left as they are.
@@ -39,13 +48,13 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 
 ## Install into a DSH profile
 
-Download the plugin tarball from [release v0.3.6-tb.3](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.3), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
+Download the plugin tarball from [release v0.3.6-tb.4](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.4), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
 
 Run these yourself in a download directory (stop the running DSH instance before replacing its plugin):
 
 ```sh
-gh release download v0.3.6-tb.3 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.3.tgz'
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.3.tgz"
+gh release download v0.3.6-tb.4 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.4.tgz'
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.4.tgz"
 npx @deepseek-ai/dsh@0.2.2-rc.1 web
 ```
 
@@ -71,7 +80,7 @@ The publisher splits the current committed branch at `ds-bot/`, fetches only the
 
 The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/upstream-watch.yml) checks stable releases daily at 06:23 UTC and on manual dispatch. A [“Sync with upstream vX.Y.Z” issue](https://github.com/Nombah501/DS-Bot/issues?q=is%3Aissue+%22Sync+with+upstream%22), with release notes and a tag comparison, is the signal to follow the sync runbook. Existing open or closed issues suppress duplicates. It needs only the built-in `GITHUB_TOKEN`, never merges or publishes, and never changes `.upstream-release`.
 
-After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.6-tb.3.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
+After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.6-tb.4.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
 
 Past upstream contributions: [room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396) and the Discussions [#1397](https://github.com/Fei2411/DS-Bot/discussions/1397), [#1398](https://github.com/Fei2411/DS-Bot/discussions/1398) and [#1399](https://github.com/Fei2411/DS-Bot/discussions/1399). Upstream accepts pull requests only from collaborators and has not answered these, so the fork no longer contributes upstream; its features and fixes are maintained here.
 
