@@ -146,6 +146,7 @@ A	ds-bot/test/cards.test.js
 A	ds-bot/test/chat-record.test.js
 M	ds-bot/test/diagnostics.test.js
 A	ds-bot/test/drafts.test.js
+M	ds-bot/test/follow-through.test.js
 A	ds-bot/test/forum-bind.test.js
 A	ds-bot/test/im-delivery.test.js
 M	ds-bot/test/im-dingtalk.test.js
@@ -168,6 +169,7 @@ A	ds-bot/test/placement.test.js
 M	ds-bot/test/room-races.test.js
 M	ds-bot/test/rounds.test.js
 A	ds-bot/test/status-panel.test.js
+M	ds-bot/test/switch-keeps-input.test.js
 A	ds-bot/test/telegram-bridge.js
 A	ds-bot/test/telegram-bridge.test.js
 A	ds-bot/test/telegram-cards.test.js
