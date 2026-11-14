@@ -118,6 +118,7 @@ M	ds-bot/src/host/channel.js
 M	ds-bot/src/host/groups.js
 A	ds-bot/src/host/im/card-kinds.js
 A	ds-bot/src/host/im/cards.js
+A	ds-bot/src/host/im/chat-record.js
 A	ds-bot/src/host/im/delivery.js
 A	ds-bot/src/host/im/drafts.js
 A	ds-bot/src/host/im/errors.js
@@ -141,6 +142,7 @@ M	ds-bot/src/shared/im-platforms.js
 M	ds-bot/test/browser-script-runner.test.js
 A	ds-bot/test/card-kinds.test.js
 A	ds-bot/test/cards.test.js
+A	ds-bot/test/chat-record.test.js
 M	ds-bot/test/diagnostics.test.js
 A	ds-bot/test/drafts.test.js
 A	ds-bot/test/im-delivery.test.js

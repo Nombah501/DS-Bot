@@ -1,6 +1,7 @@
 // Telegram keeps physical chats separate from Topic bindings. botId is the
 // connection's Default Bot, not a restriction on the team's reachable targets.
 import { imPlatform } from '../../shared/im-platforms.js'
+import { setPersonId } from './chat-record.js'
 
 export const addressKey = chat => chat.threadId === undefined ? chat.key : JSON.stringify([chat.key, chat.threadId])
 export const sameTarget = (left, right) => left !== undefined && right !== undefined && left.botId === right.botId && left.roomId === right.roomId
@@ -23,10 +24,7 @@ export function migrateTopics(conn) {
   // Before Topics, a direct chat recorded no owner. Telegram private chat IDs
   // equal the other participant's user ID; pairing now stores this explicitly.
   for (const [key, chat] of Object.entries(conn.chats ?? {})) {
-    if (chat.kind === 'direct' && chat.personId === undefined && conn.paired?.some(person => person.id === key)) {
-      chat.personId = key
-      changed = true
-    }
+    if (chat.personId === undefined) changed = setPersonId(chat, conn.paired?.find(person => person.id === key)) || changed
   }
   return changed
 }

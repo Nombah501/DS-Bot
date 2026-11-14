@@ -15,6 +15,7 @@ import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
 import { cardKinds, NUMBERS } from './card-kinds.js'
+import { chatRecords } from './chat-record.js'
 import { delivery } from './delivery.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
@@ -45,13 +46,6 @@ export function install(rt) {
     const saved = conn.chats?.[chatKey]
     return { personId: saved?.personId ?? saved?.lastSenderId, languageCode: saved?.languageCode }
   })
-  // The single writer of who last spoke in a saved chat and in which language.
-  const heard = async (conn, chat, sender) => {
-    if (imPlatform(conn.platform)?.personLanguage !== true || chat === undefined || (chat.languageCode === sender.languageCode && chat.lastSenderId === sender.id)) return
-    chat.languageCode = sender.languageCode
-    chat.lastSenderId = sender.id
-    await rt.save()
-  }
 
   // ---------------------------------------------------------------- runtime file
   const runtimes = new Map() // id → { data: {runtime, cards, open}, timer, writing }
@@ -129,6 +123,7 @@ export function install(rt) {
     for (const conn of Object.values(conns)) if (imPlatform(conn.platform)?.topics === true) topicsMigrated = migrateTopics(conn) || topicsMigrated
     return conns
   }
+  const records = chatRecords(rt, { connections })
   const adaptersFor = () => Object.keys(adapters)
   const hasSecrets = conn => Object.values(conn.secrets ?? {}).every(name => rt.secretValue(name) !== undefined)
   const fieldsOf = (conn) => {
@@ -212,7 +207,7 @@ export function install(rt) {
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
   const requested = (conn, msg) => {
     if ((conn.requests ?? []).some(entry => entry.id === msg.sender.id)) return false
-    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, ...(imPlatform(conn.platform)?.personLanguage === true ? { languageCode: msg.sender.languageCode } : {}), at: Date.now() }]
+    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, chatTitle: msg.chat.title, ...(imPlatform(conn.platform)?.personLanguage === true ? { languageCode: msg.sender.languageCode } : {}), at: Date.now() }]
     return true
   }
 
@@ -265,36 +260,25 @@ export function install(rt) {
   const forumBind = forumBinder(rt, { handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
 
   const onMessage = (conn) => async (msg) => {
-    const text = textForPerson(conn, msg.sender)
     if (!paired(conn, msg.sender.id)) {
+      const text = textForPerson(conn, msg.sender)
       if (msg.chat.kind === 'group' && !msg.mentioned) return
       if (!requested(conn, msg)) return
       await rt.save()
       await sendText(conn, msg.chat, text('requested'))
       return
     }
-    conn.chats ??= {}
     if (msg.chat.kind === 'group' && !msg.mentioned && !(imPlatform(conn.platform)?.topics === true && msg.chat.isForum === true)) return
-    if (conn.chats[msg.chat.key] === undefined) {
-      conn.chats[msg.chat.key] = { kind: msg.chat.kind, title: msg.chat.title, at: Date.now() }
-      await rt.save()
-    }
+    const arrival = await records.arrived(conn.id, msg)
+    conn = arrival.conn
+    const chat = arrival.chat
+    const text = textForPerson(conn, msg.sender)
     const body = String(msg.text ?? '').trim()
-    const chat = conn.chats[msg.chat.key]
-    if (imPlatform(conn.platform)?.topics === true && msg.chat.isForum === true && chat.isForum !== true) {
-      chat.isForum = true
-      await rt.save()
-    }
     if (imPlatform(conn.platform)?.topics === true && /^\/bind(?:@\S+)?\s*$/.test(body)) {
       await forumBind.command(conn, msg)
       return
     }
     const unboundKey = chat.isForum === true ? 'bindHint' : msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'
-    if (imPlatform(conn.platform)?.topics === true && chat.kind === 'direct' && chat.personId !== msg.sender.id) {
-      chat.personId = msg.sender.id
-      await rt.save()
-    }
-    await heard(conn, chat, msg.sender)
     if (imPlatform(conn.platform)?.personLanguage === true && /^\/lang(?:@\S+)?(?:\s|$)/.test(body)) {
       const person = conn.paired.find(person => person.id === msg.sender.id)
       const language = body.split(/\s+/).slice(1).join(' ')
@@ -378,7 +362,7 @@ export function install(rt) {
       return
     }
     const text = textForPerson(conn, action.sender)
-    await heard(conn, conn.chats?.[action.chat.key], action.sender)
+    await records.heard(conn.id, action.chat.key, action.sender)
     const data = String(action.data ?? '')
     const { chat } = action
     if (imPlatform(conn.platform)?.topics === true && data.startsWith('b:')) {
@@ -729,7 +713,7 @@ export function install(rt) {
       return true
     },
     async 'im-pair'(body) {
-      const conn = connections()[String(body.id ?? '')]
+      let conn = connections()[String(body.id ?? '')]
       if (conn === undefined) throw new Error('No such IM bot')
       const at = (conn.requests ?? []).findIndex(entry => entry.id === String(body.senderId ?? ''))
       if (at === -1) throw new Error('This request is gone')
@@ -737,13 +721,8 @@ export function install(rt) {
       const [request] = conn.requests.splice(at, 1)
       if (body.allow === true) {
         conn.paired = [...(conn.paired ?? []), { id: request.id, name: request.name, at: Date.now(), ...(access === undefined ? {} : { access }) }]
-        conn.chats ??= {}
-        conn.chats[request.chatKey] ??= { kind: request.chatKind, title: request.name, at: Date.now() }
-        if (imPlatform(conn.platform)?.personLanguage === true) {
-          conn.chats[request.chatKey].languageCode = request.languageCode
-          if (request.chatKind === 'direct') conn.chats[request.chatKey].personId = request.id
-        }
-        await rt.save()
+        const accepted = await records.paired(conn.id, request)
+        conn = accepted.conn
         if (imPlatform(conn.platform)?.topics === true) await ensurePrivateTopics(conn, request.chatKey)
         const chat = conn.chats[request.chatKey]
         const text = textForChat(conn, request.chatKey)
@@ -781,17 +760,17 @@ export function install(rt) {
       if (conn === undefined) throw new Error('No such IM bot')
       const chat = conn.chats?.[String(body.chatKey ?? '')]
       if (chat === undefined) throw new Error('No such chat')
+      const chatKey = String(body.chatKey ?? '')
       if (body.remove === true) {
-        delete conn.chats[String(body.chatKey ?? '')]
+        await records.remove(conn.id, chatKey)
       } else if (body.target === null) {
-        delete chat.target
+        await records.setTarget(conn.id, chatKey, undefined)
       } else if (body.target !== undefined) {
         const target = body.target
         if (target.botId !== undefined && rt.botOf(target.botId) === undefined) throw new Error('Choose a Bot or a group')
         if (target.roomId !== undefined && rt.roomOf(target.roomId) === undefined) throw new Error('Choose a Bot or a group')
-        chat.target = target.botId !== undefined ? { botId: String(target.botId) } : { roomId: String(target.roomId) }
+        await records.setTarget(conn.id, chatKey, target.botId !== undefined ? { botId: String(target.botId) } : { roomId: String(target.roomId) })
       }
-      await rt.save()
       return true
     },
     async 'im-retry'(body) {
@@ -832,7 +811,7 @@ export function install(rt) {
         enabled: true,
         paired: login.owner === undefined ? [] : [{ id: login.owner.id, name: login.owner.name, at: Date.now() }],
         requests: [],
-        chats: login.owner === undefined ? {} : { [login.owner.id]: { kind: 'direct', title: login.owner.name, at: Date.now() } },
+        chats: {},
         createdAt: Date.now(),
       }
       for (const [key, value] of Object.entries(login.connection.secrets ?? {})) {
@@ -841,7 +820,8 @@ export function install(rt) {
         conn.secrets[key] = name
       }
       connections()[conn.id] = conn
-      await rt.save()
+      if (login.owner === undefined) await rt.save()
+      else await records.paired(conn.id, { ...login.owner, chatKey: login.owner.id, chatKind: 'direct', chatTitle: login.owner.name })
       await sync()
       return { status: 'done', id: conn.id }
     },
