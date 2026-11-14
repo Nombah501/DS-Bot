@@ -13,9 +13,13 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Topics and `/bind`:** private Topics for accessible Bots and DS Bot group chats, lifecycle rename/close/recreation without deleting history, and administrator-controlled forum bindings. General can use the Default Bot; an unknown named Topic is not silently redirected there.
 - **Access list:** choose the Bots and groups each paired person may reach. Revocation also affects queued output, Cards, Drafts and panel controls.
 - **Reply where asked:** Telegram-started turns return to their exact connection, chat and Topic. Autonomous/non-Telegram turns use accessible private destinations, with all/Cards-only/none settings.
-- **Status panel:** pinned, updating private widget with Stop; group/forum `/status` uses a rich snapshot with an authorized Stop control while work is active.
+- **Status:** `/status` answers with a rich snapshot and an authorized Stop control while work is active, in private chats and groups alike. The pinned private Status panel widget is kept in the code but not created while Telegram has widgets closed.
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
+
+### In 0.3.6-tb.3
+
+- **Private `/status` while Telegram widgets are closed:** a private `/status` now answers like a group one — a snapshot Card with Stop while the Bot works, plain text when idle — instead of refreshing a pinned widget Telegram currently shows as unavailable. Existing pinned panels are left as they are.
 
 ### In 0.3.6-tb.2
 
