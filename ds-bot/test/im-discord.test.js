@@ -139,11 +139,12 @@ test('a failed guild channel lookup keeps messages with an empty title and is ca
 
 test('a hung channel lookup times out without dropping the message and can retry', async (t) => {
   const timeout = AbortSignal.timeout.bind(AbortSignal)
-  t.mock.method(AbortSignal, 'timeout', () => timeout(20))
+  let lookups = 0
+  // Only the hung first lookup gets a short deadline; the retry keeps the real one.
+  t.mock.method(AbortSignal, 'timeout', ms => timeout(lookups === 0 ? 20 : ms))
   const fake = await fakeDiscord()
   fake.replies['/api/v10/channels/g1'] = { result: { id: 'g1', name: 'general' } }
   const messages = []
-  let lookups = 0
   const options = env(fake)
   options.fetch = (url, init) => {
     if (url.endsWith('/channels/g1') && ++lookups === 1) {
