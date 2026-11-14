@@ -66,6 +66,7 @@ test('Chat record: an adopt during arrival preserves sender fields and uses the 
   t.mock.method(b.rt, 'save', async () => {
     await Promise.resolve()
     if (saved.length === 0) {
+      // Replace in-memory connections wholesale; disk re-reads discarding unsaved changes belong to Store, outside this ticket.
       b.rt.state.im.connections = structuredClone(b.rt.state.im.connections)
       b.current().botId = 'b'
     }
@@ -235,7 +236,7 @@ test('Chat record: Topic migration backfills only missing direct-chat owners wit
   assert.equal(migrateTopics(conn), false)
 })
 
-test('Chat record: /bind records a direct sender’s ownership and language before its reply', async t => {
+test('Chat record: a /bind message records the direct sender’s ownership and language in one arrival save', async t => {
   const b = await inbound(t)
   await b.fake.handlers.onMessage(message(direct, '/bind'))
   assert.equal(b.saved[0].im_record.chats.dm.personId, 'ann')
@@ -296,3 +297,29 @@ test('Chat record: im-chat preserves target validation and saves only changed bi
   assert.equal(b.saved.length, 3)
   assert.deepEqual(b.warnings, [])
 })
+
+for (const removed of ['chat', 'connection']) {
+  test(`Chat record: an arrival quietly stops when its ${removed} is removed during its save`, async t => {
+    const b = await inbound(t)
+    const saving = Promise.withResolvers()
+    const resume = Promise.withResolvers()
+    t.after(() => resume.resolve())
+    let saves = 0
+    t.mock.method(b.rt, 'save', async () => {
+      if (++saves !== 1) return
+      saving.resolve()
+      await resume.promise
+    })
+    // Surface the handler's rejection rather than swallowing it as a warning.
+    t.mock.method(b.rt, 'warn', (_template, error) => { throw error })
+    const arrival = b.fake.handlers.onMessage(message())
+    await saving.promise
+    if (removed === 'chat') await b.rt.imEndpoint('im-chat', { id: 'im_record', chatKey: 'dm', remove: true })
+    else await b.rt.imEndpoint('im-remove', { id: 'im_record' })
+    resume.resolve()
+    await assert.doesNotReject(arrival, `removing the ${removed} must quietly stop the arrival`)
+    assert.equal(b.current()?.chats.dm, undefined)
+    if (removed === 'connection') assert.equal(b.current(), undefined)
+    assert.deepEqual(b.sent, [])
+  })
+}

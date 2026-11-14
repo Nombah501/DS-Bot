@@ -270,6 +270,7 @@ export function install(rt) {
     }
     if (msg.chat.kind === 'group' && !msg.mentioned && !(imPlatform(conn.platform)?.topics === true && msg.chat.isForum === true)) return
     const arrival = await records.arrived(conn.id, msg)
+    if (arrival.conn === undefined || arrival.chat === undefined) return
     conn = arrival.conn
     const chat = arrival.chat
     const text = textForPerson(conn, msg.sender)
