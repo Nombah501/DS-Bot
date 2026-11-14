@@ -9,7 +9,7 @@ const ann = { id: '9', languageCode: 'en' }
 const bob = { id: '10', languageCode: 'en' }
 const text = key => `<${key}>`
 const stale = () => Object.assign(new Error('Already answered'), { code: 'bot/stale' })
-const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async () => undefined, chats = [chat] } = {}) => {
+const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async () => undefined, chats = [chat], languages } = {}) => {
   const conn = { id: 'one', platform, paired: [ann, bob], chats: Object.fromEntries(chats.map(address => [address.key, { kind: address.kind }])) }
   const connections = () => ({ [conn.id]: conn })
   const data = { cards: {} }
@@ -25,12 +25,15 @@ const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async (
     editPrivateCard: async (address, copy, card) => { edits.push({ chat: address, ephemeralMessageId: copy.ephemeralMessageId, card: structuredClone(card) }) },
     edit: async (address, messageId, content) => { edits.push({ chat: address, messageId, ...content }) },
   }
+  const localized = language => key => `<${key}:${language}>`
+  const textForChat = (_conn, chatKey) => languages === undefined ? text : localized(languages[chatKey])
+  const textForPerson = (_conn, sender) => languages === undefined ? text : localized(sender.languageCode)
   let kinds
   const cards = cardJournal({
     store: { of: async () => data, peek: () => data, save: () => {} },
     connections,
-    textForChat: () => text,
-    textForPerson: () => text,
+    textForChat,
+    textForPerson,
     handleOf: () => handle,
     deliveryOf: () => ({ output: (destination, content, callbacks) => { queue.push({ destination, content, ...callbacks }) } }),
     paired: (_conn, id) => conn.paired.some(person => person.id === id),
@@ -56,7 +59,7 @@ const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async (
       may: (_conn, id, target) => target !== undefined && !denied.has(id),
     },
     sendText: (_conn, address, body) => { messages.push({ chat: address, text: body }) },
-    textForPerson: () => text,
+    textForPerson,
     platformOf: id => ({ ...imPlatform(id), ...capabilities }),
   })
   let nextId = 700
@@ -266,3 +269,29 @@ test('Card kinds: source-side approval settlement edits the chosen option and re
   assert.deepEqual(b.toasts, ['<stale>'])
   assert.deepEqual(b.edits.map(edit => edit.card.settled), [{ answer: '<reject>', options: [{ label: '<reject>', style: 'danger' }] }])
 })
+
+for (const kind of ['question', 'approval']) {
+  test(`Card kinds: a source-stale ${kind} settles every copy in its own language`, async () => {
+    const privateApproval = kind === 'approval'
+    const b = bench({
+      chats: [chat, { key: '-61', kind: privateApproval ? 'direct' : 'group' }],
+      languages: { '-60': privateApproval ? 'ru' : 'en', '-61': privateApproval ? 'en' : 'ru' },
+      initiatorOf: async () => privateApproval ? { sender: { ...ann, languageCode: 'ru' } } : undefined,
+    })
+    if (privateApproval) {
+      await b.approval()
+      b.pending.clear()
+    } else {
+      await b.question()
+      b.rt.answerQuestion = async () => { throw stale() }
+    }
+    b.clear()
+    await b.press(privateApproval ? 'a:approval:allow' : 'q:question:0', ann,
+      privateApproval ? { ephemeralMessageId: 701, receiverUserId: ann.id } : {})
+    assert.deepEqual(b.toasts, ['<stale:en>'])
+    assert.deepEqual(b.edits.map(edit => [edit.chat.key, edit.card.settled.answer]), [
+      ['-60', privateApproval ? '<answered:ru>' : '<answered:en>'],
+      ['-61', privateApproval ? '<answered:en>' : '<answered:ru>'],
+    ])
+  })
+}

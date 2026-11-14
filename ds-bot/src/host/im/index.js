@@ -14,7 +14,7 @@ import { cleanAccess, migrateTopics, privateTopicCreator, topicRestorer } from '
 import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
-import { cardKinds } from './card-kinds.js'
+import { cardKinds, NUMBERS } from './card-kinds.js'
 import { delivery } from './delivery.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
@@ -23,7 +23,6 @@ import { showStatus, statusData, statusPanels } from './status-panel.js'
 const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
 const TYPING_MS = 4_000
-const NUMBERS = /^\s*\d+(\s+\d+)*\s*$/
 
 const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase()
 
@@ -422,7 +421,7 @@ export function install(rt) {
 
   // Whether the thing a Card asks about still waits for an answer.
   const sourceOpen = (conn) => {
-    const open = kinds.sourceOpen(conn)
+    const open = kinds.sourceOpen()
     return (cardKey, entries) => cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
       ? entries.some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
         && statusData(rt, entry.target, textForChat(conn, entry.chatKey), statusSteps).active)

@@ -3,7 +3,7 @@
 import { viewCardText } from '../parts.js'
 import { imPlatform } from '../../shared/im-platforms.js'
 
-const NUMBERS = /^\s*\d+(\s+\d+)*\s*$/
+export const NUMBERS = /^\s*\d+(\s+\d+)*\s*$/
 
 export function cardKinds(rt, { cards, place, connections, handleOf, running, sendText, textForPerson, platformOf = imPlatform }) {
   const { state } = rt
@@ -33,7 +33,7 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       await cards.settle(conn, held.cardKey, valid.join(', '))
     } catch (error) {
       if (error?.code === 'bot/stale') {
-        await cards.claim(conn, held.cardKey, text('answered'))
+        await cards.claim(conn, held.cardKey, text => text('answered'))
         await reply(conn, chat, text('stale'), action)
         await cards.edits(conn)
         return true
@@ -51,7 +51,7 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       await cards.settle(conn, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
     } catch (error) {
       if (error?.code === 'bot/stale') {
-        await cards.claim(conn, held.cardKey, text('answered'))
+        await cards.claim(conn, held.cardKey, text => text('answered'))
         await reply(conn, chat, text('stale'), action)
         await cards.edits(conn)
         return true
@@ -77,8 +77,7 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       await reply(conn, chat, text(refusal), action)
       return
     }
-    if (data.startsWith('m:') && cut > 2 && platformOf(conn.platform)?.richCards === true) {
-      const key = `q:${cardKey.slice(2)}`
+    if (data.startsWith('m:')) {
       const held = cards.open(conn, chat, key)
       const found = questionById(cardKey.slice(2))
       const handle = handleOf(conn.id)
@@ -102,7 +101,7 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       await cards.redraw(conn, chat, entry)
       return
     }
-    if (data.startsWith('q:') && cut > 2) {
+    if (data.startsWith('q:')) {
       const found = questionById(cardKey.slice(2))
       const label = found?.question.options?.[Number(choice)]?.label
       if (label === undefined) {
@@ -112,10 +111,8 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       if (!(await answerQuestion(conn, chat, cardKey, [label], action.sender, action))) await reply(conn, chat, text('stale'), action)
       return
     }
-    if (data.startsWith('a:') && cut > 2) {
-      if (choice === 'allow' || choice === 'reject') {
-        if (!(await answerApproval(conn, chat, cardKey, choice, action.sender, action))) await reply(conn, chat, text('stale'), action)
-      }
+    if (data.startsWith('a:')) {
+      if (!(await answerApproval(conn, chat, cardKey, choice, action.sender, action))) await reply(conn, chat, text('stale'), action)
     }
   }
   const outcome = (conn, chat, cardKey, sender, action) => {
@@ -191,6 +188,7 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       await cards.send(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => cardText.question(bot.name, question, text), buttons,
         text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
     }
+    // Secret requests: text only — the key is typed on the computer or phone.
     for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
       const bot = rt.botOf(botId)
       if (bot === undefined) continue
