@@ -3,7 +3,7 @@
 // The platform adapters (im/platforms/) own the wire; placement.js decides where output
 // goes; cards.js keeps the Card journal; card-kinds.js owns DSH-sourced Cards;
 // delivery.js owns queued sends. This module owns pairing and event routing.
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { replaceFile } from '../files.js'
@@ -14,8 +14,9 @@ import { cleanAccess, migrateTopics, topics } from './topics.js'
 import { placement } from './placement.js'
 import { draftStream } from './drafts.js'
 import { cardJournal } from './cards.js'
-import { cardKinds, NUMBERS } from './card-kinds.js'
+import { cardKinds } from './card-kinds.js'
 import { chatRecords } from './chat-record.js'
+import { inbound } from './inbound.js'
 import { delivery } from './delivery.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
@@ -211,11 +212,6 @@ export function install(rt) {
 
   // ----------------------------------------------------------------- inbound
   const paired = (conn, senderId) => (conn.paired ?? []).some(entry => entry.id === senderId)
-  const requested = (conn, msg) => {
-    if ((conn.requests ?? []).some(entry => entry.id === msg.sender.id)) return false
-    conn.requests = [...(conn.requests ?? []), { id: msg.sender.id, name: msg.sender.name, chatKey: msg.chat.key, chatKind: msg.chat.kind, chatTitle: msg.chat.title, ...(imPlatform(conn.platform)?.personLanguage === true ? { languageCode: msg.sender.languageCode } : {}), at: Date.now() }]
-    return true
-  }
 
   const targetName = (conn, target) => {
     if (target?.botId !== undefined) return rt.botOf(target.botId)?.name
@@ -265,59 +261,13 @@ export function install(rt) {
 
   const forumBind = forumBinder(rt, { connections, topics: topicLifecycle, handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
 
-  const onMessage = (conn) => async (msg) => {
-    if (!paired(conn, msg.sender.id)) {
-      const text = textForPerson(conn, msg.sender)
-      if (msg.chat.kind === 'group' && !msg.mentioned) return
-      if (!requested(conn, msg)) return
-      await rt.save()
-      await sendText(conn, msg.chat, text('requested'))
-      return
-    }
-    if (msg.chat.kind === 'group' && !msg.mentioned && !(imPlatform(conn.platform)?.topics === true && msg.chat.isForum === true)) return
-    const arrival = await records.arrived(conn.id, msg)
-    if (arrival.conn === undefined || arrival.chat === undefined) return
-    conn = arrival.conn
-    const chat = arrival.chat
-    const text = textForPerson(conn, msg.sender)
-    const body = String(msg.text ?? '').trim()
-    if (imPlatform(conn.platform)?.topics === true && /^\/bind(?:@\S+)?\s*$/.test(body)) {
-      await forumBind.command(conn, msg)
-      return
-    }
-    const unboundKey = chat.isForum === true ? 'bindHint' : msg.chat.kind === 'group' ? 'unboundGroup' : 'unbound'
-    if (imPlatform(conn.platform)?.personLanguage === true && /^\/lang(?:@\S+)?(?:\s|$)/.test(body)) {
-      const person = conn.paired.find(person => person.id === msg.sender.id)
-      const language = body.split(/\s+/).slice(1).join(' ')
-      if (['ru', 'en', 'auto'].includes(language)) {
-        person.language = language
-        await rt.save()
-      }
-      await sendText(conn, msg.chat, text('language', { language: person.language ?? 'auto' }))
-      return
-    }
-    const target = place.targetOf(conn, msg.chat)
-    if (!NUMBERS.test(body) && target !== undefined && !place.may(conn, msg.sender.id, target)) {
-      await sendText(conn, msg.chat, text('denied'))
-      return
-    }
-    if (/^\/start(?:@\S+)?\s*$/.test(body)) {
-      const name = target === undefined ? undefined : targetName(conn, target)
-      await sendText(conn, msg.chat, name === undefined ? text(unboundKey) : text('greeting', { name }))
-      return
-    }
-    if (/^\/stop(?:@\S+)?\s*$/.test(body)) {
-      if (target === undefined) {
-        await sendText(conn, msg.chat, text(unboundKey))
-        return
-      }
-      await stopTarget(conn, msg.chat, target, text)
-      return
-    }
-    if (imPlatform(conn.platform)?.topics === true && /^\/status(?:@\S+)?\s*$/.test(body)) {
-      if (target === undefined) {
-        await sendText(conn, msg.chat, text(unboundKey))
-      } else {
+  // Keep snapshot wiring here so ticket 42 remains a one-commit revert.
+  const incoming = inbound(
+    rt,
+    {
+      records, place, kinds, forumBind, connections,
+      deliveryOf: id => runners.get(id)?.delivery,
+      showStatus: async (conn, msg, target, text) => {
         const runner = runners.get(conn.id)
         await showStatus(rt, {
           chat: msg.chat, target, text, steps: statusSteps,
@@ -325,41 +275,10 @@ export function install(rt) {
           sendCard: runner?.handle !== undefined && imPlatform(conn.platform)?.richCards === true ? (...args) => cards.send(conn, ...args) : undefined,
           sendText: body => runner?.delivery.output({ chat: msg.chat, target }, { text: body, rich: true }),
         })
-      }
-      return
-    }
-    if (NUMBERS.test(body) && await kinds.number(conn, msg)) return
-    if (target !== undefined && !place.may(conn, msg.sender.id, target)) {
-      await sendText(conn, msg.chat, text('denied'))
-      return
-    }
-    if (target === undefined) {
-      await sendText(conn, msg.chat, text(unboundKey))
-      return
-    }
-    const sessionId = target.botId ?? target.roomId
-    const content = []
-    if (body !== '') content.push({ type: 'text', text: body })
-    for (const image of msg.images ?? []) content.push({ type: 'image', mediaType: image.mediaType, data: image.data })
-    const env = await envFor(conn)
-    for (const file of msg.files ?? []) {
-      try {
-        const receiptId = await env.uploadFile(rt.botOf(sessionId) ? rt.chatOf(sessionId) : sessionId, file)
-        content.push({ type: 'file', receiptId })
-      } catch {
-        await sendText(conn, msg.chat, text('noFile'))
-      }
-    }
-    if (content.length === 0) return
-    const requestId = `im:${conn.platform}:${randomUUID()}`
-    await place.asked(conn, requestId, msg.sender, msg.chat)
-    try {
-      await rt.sendUser({ sessionId, content, requestId })
-    } catch (error) {
-      await place.unasked(conn, requestId)
-      throw error
-    }
-  }
+      },
+      textForPerson, targetName, stopTarget, envFor,
+    },
+  )
 
   const onAction = (conn) => async (action) => {
     if (!paired(conn, action.sender.id)) {
@@ -464,7 +383,7 @@ export function install(rt) {
       const handle = adapter.connect(fieldsOf(conn), env, {
         onMessage: (msg) => {
           const current = fresh(conn.id)
-          return current === undefined ? undefined : onMessage(current)(msg).catch(error => rt.warn('ds-bot: im message failed: %s', error))
+          return current === undefined ? undefined : incoming.message(current, msg).catch(error => rt.warn('ds-bot: im message failed: %s', error))
         },
         onAction: (action) => {
           const current = fresh(conn.id)

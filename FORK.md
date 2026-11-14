@@ -124,6 +124,7 @@ A	ds-bot/src/host/im/drafts.js
 A	ds-bot/src/host/im/errors.js
 M	ds-bot/src/host/im/format.js
 A	ds-bot/src/host/im/forum-bind.js
+A	ds-bot/src/host/im/inbound.js
 M	ds-bot/src/host/im/index.js
 A	ds-bot/src/host/im/locale.js
 A	ds-bot/src/host/im/placement.js
@@ -159,6 +160,7 @@ M	ds-bot/test/im-telegram.test.js
 M	ds-bot/test/im-wecom.test.js
 M	ds-bot/test/im-weixin.test.js
 M	ds-bot/test/im.test.js
+A	ds-bot/test/inbound.test.js
 M	ds-bot/test/install.test.js
 A	ds-bot/test/locale.test.js
 A	ds-bot/test/placement-fixture.js
