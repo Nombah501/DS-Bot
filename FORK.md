@@ -16,7 +16,6 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Status:** `/status` answers with a rich snapshot and an authorized Stop control while work is active, in private chats and groups alike. The pinned private Status panel widget is kept in the code but not created while Telegram has widgets closed.
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
-- **Test reliability:** paused-group checks wait for the relay to finish before checking parked calls or the absence of member prompts, rather than assuming a fixed delay is enough.
 
 ### In 0.3.6-tb.6
 
