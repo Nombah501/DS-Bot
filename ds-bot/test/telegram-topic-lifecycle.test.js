@@ -32,34 +32,67 @@ test('S1: renaming a Bot renames its existing Topic without creating another', a
   assert.equal(s.calls.slice(after).some(call => call.method === 'createForumTopic'), false)
 })
 
-test('S1: deleting a Bot explains and closes its Topic while preserving history', async t => {
+test('S1: deleting a Bot explains and renames its Topic while preserving history', async t => {
   const s = await setup(t)
   const after = s.calls.length
   await s.rt.deleteBot('b')
   const notice = await s.request('sendMessage', p => /Writer.*deleted/.test(p.text), after)
   assert.equal(notice.params.message_thread_id, 102)
-  const closed = await s.request('closeForumTopic', p => p.message_thread_id === 102, after)
-  assert.equal(closed.params.chat_id, '5')
-  assert.equal(s.calls.slice(after).some(call => call.method === 'deleteForumTopic'), false)
+  const renamed = await s.request('editForumTopic', p => p.message_thread_id === 102 && p.name === 'Writer — deleted', after)
+  assert.equal(renamed.params.chat_id, '5')
+  await until(() => s.rt.state.im.connections[s.connection.id].chats['5'].topics[102].closed === true)
+  const swept = s.calls.length
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: 'all' })
+  assert.deepEqual(s.calls.slice(swept).filter(call => ['sendMessage', 'editForumTopic', 'createForumTopic'].includes(call.method)), [])
+  assert.equal(s.rt.state.im.connections[s.connection.id].chats['5'].topics[102].closed, true)
+  assert.equal(s.calls.slice(after).some(call => ['closeForumTopic', 'reopenForumTopic', 'deleteForumTopic'].includes(call.method)), false)
 })
 
-test('S1: Access removal closes only that person’s Topic with a localized explanation', async t => {
+test('S1: Access removal renames only that person’s Topic with a localized explanation', async t => {
   const s = await setup(t, 'ru')
   s.message('hello', { chat: { id: 6, type: 'private' }, from: { id: 10, first_name: 'Ben' } })
   await s.request('sendMessage', p => p.chat_id === '6' && /connection request/.test(p.text))
   await s.rt.imEndpoint('im-pair', { id: s.connection.id, senderId: '10', allow: true })
   const after = s.calls.length
-  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: ['r1'] } })
+  await assert.doesNotReject(s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: ['r1'] } }), 'revoking a private Topic must succeed without a forum close call')
   const notice = await s.request('sendMessage', p => /Writer.*больше не входит в ваш список доступа/.test(p.text), after)
   assert.equal(notice.params.chat_id, '5')
   assert.equal(notice.params.message_thread_id, 102)
-  await s.request('closeForumTopic', p => p.chat_id === '5' && p.message_thread_id === 102, after)
+  const topic = () => s.rt.state.im.connections[s.connection.id].chats['5'].topics[102]
+  await until(() => topic().closed === true)
+  const renamed = s.calls.slice(after).filter(call => call.method === 'editForumTopic')
+  assert.deepEqual(renamed.map(call => call.params), [{ chat_id: '5', message_thread_id: 102, name: 'Writer — нет доступа' }])
+  assert.equal(topic().name, 'Writer — нет доступа')
+  assert.equal(topic().notified, true)
+  assert.ok(s.calls.indexOf(notice) < s.calls.indexOf(renamed[0]), 'notice precedes the rename')
+  const swept = s.calls.length
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: ['r1'] } })
+  assert.deepEqual(s.calls.slice(swept).filter(call => ['sendMessage', 'editForumTopic', 'closeForumTopic'].includes(call.method)), [], 'a closed Topic makes no further Telegram call on the next sweep')
   s.step('Still for Ben', {}, 'b')
   const sent = await s.request('sendRichMessage', p => /Still for Ben/.test(p.rich_message.html), after)
   assert.equal(sent.params.chat_id, '6')
   assert.equal(sent.params.message_thread_id, 105)
-  assert.equal(s.calls.slice(after).some(call => call.method === 'closeForumTopic' && call.params.chat_id === '6'), false)
+  assert.equal(s.calls.slice(after).some(call => call.method === 'closeForumTopic'), false)
   assert.equal(s.calls.slice(after).some(call => call.method === 'sendRichMessage' && call.params.chat_id === '5'), false)
+})
+
+test('S1: restoring Access renames the same private Topic without reopening or creating one', async t => {
+  const s = await setup(t)
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: ['r1'] } })
+  await s.rt.updateBot('b', { name: 'Editor' })
+  const after = s.calls.length
+  await assert.doesNotReject(s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: 'all' }), 'restoring a private Topic must succeed without a forum reopen call')
+  const topic = s.rt.state.im.connections[s.connection.id].chats['5'].topics[102]
+  assert.deepEqual(s.calls.slice(after).filter(call => call.method === 'editForumTopic').map(call => call.params),
+    [{ chat_id: '5', message_thread_id: 102, name: 'Editor' }])
+  assert.equal(topic.name, 'Editor')
+  assert.equal(topic.closed, undefined)
+  assert.equal(topic.notified, undefined)
+  assert.equal(s.calls.slice(after).some(call => ['reopenForumTopic', 'createForumTopic', 'sendMessage'].includes(call.method)), false)
+  const revokedAgain = s.calls.length
+  await s.rt.imEndpoint('im-access', { id: s.connection.id, senderId: '9', access: { botIds: ['a'], roomIds: ['r1'] } })
+  assert.equal(s.calls.slice(revokedAgain).filter(call => call.method === 'sendMessage' && /Editor.*Access list/.test(call.params.text)).length, 1)
+  assert.equal(s.rt.state.im.connections[s.connection.id].chats['5'].topics[102].closed, true)
 })
 
 test('S1: a newly created Bot gets a Topic automatically for all-access people', async t => {
@@ -97,7 +130,7 @@ test('S1: group Topics follow group renames and deletion too', async t => {
   await s.request('editForumTopic', p => p.message_thread_id === 103 && p.name === 'Support', after)
   await s.rt.deleteRoom('r1')
   await s.request('sendMessage', p => p.message_thread_id === 103 && /Support.*deleted/.test(p.text), after)
-  await s.request('closeForumTopic', p => p.message_thread_id === 103, after)
+  await s.request('editForumTopic', p => p.message_thread_id === 103 && p.name === 'Support — deleted', after)
 })
 
 test('S1: a Card sent to a deleted Topic can be answered in its replacement', async t => {
@@ -188,6 +221,6 @@ test('S1: private Topic lifecycle leaves admin-managed forum bindings intact', a
   s.message('/stop', { chat: forum, message_thread_id: 40 })
   await s.request('sendMessage', p => p.chat_id === '-60' && p.text === 'Stopped.', after)
   await s.rt.deleteBot('b')
-  await s.request('closeForumTopic', p => p.chat_id === '5' && p.message_thread_id === 102, after)
+  await s.request('editForumTopic', p => p.chat_id === '5' && p.message_thread_id === 102 && p.name === 'Editor — deleted', after)
   assert.equal(s.calls.slice(after).some(call => ['createForumTopic', 'editForumTopic', 'closeForumTopic'].includes(call.method) && call.params.chat_id === '-60'), false)
 })

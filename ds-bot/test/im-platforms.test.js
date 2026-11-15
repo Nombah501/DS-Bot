@@ -11,7 +11,7 @@ const handleMethods = {
   typing: ['typing'],
   richCards: ['sendCard', 'editCard'],
   drafts: ['draft'],
-  topics: ['createTopic', 'renameTopic', 'closeTopic', 'reopenTopic'],
+  topics: ['createTopic', 'renameTopic'],
   privateCards: ['sendPrivateCard', 'editPrivateCard', 'deletePrivateCard'],
   forumAdmin: ['isAdmin'],
   statusPanel: ['sendStatusPanel', 'editStatusPanel', 'pinStatusPanel'],
@@ -40,6 +40,8 @@ for (const [id, adapter] of Object.entries(adapters)) {
     t.after(() => handle.stop())
     assert.equal(typeof handle.send, 'function')
     assert.equal(typeof handle.stop, 'function')
+    assert.equal('closeTopic' in handle, false, `${id} must not expose closeTopic`)
+    assert.equal('reopenTopic' in handle, false, `${id} must not expose reopenTopic`)
     for (const [capability, methods] of Object.entries(handleMethods)) {
       for (const method of methods) {
         assert.equal(typeof handle[method] === 'function', platform[capability] === true, `${id}.${method} agrees with ${capability}`)

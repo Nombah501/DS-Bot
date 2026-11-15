@@ -25,8 +25,8 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   const polls = new Set()
   let updateId = 0
   let messageId = 0
-  const respond = (res, answer) => {
-    res.writeHead(200, { 'content-type': 'application/json' })
+  const respond = (res, answer, status = 200) => {
+    res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(answer))
   }
   const drain = () => {
@@ -44,7 +44,9 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
       const params = JSON.parse(body || '{}')
       calls.push({ method, params })
       const override = replies[method]
-      if (override !== undefined) {
+      if (['closeForumTopic', 'reopenForumTopic'].includes(method) && Number(params.chat_id) > 0) {
+        respond(res, { ok: false, error_code: 400, description: 'Bad Request: the chat is not a supergroup forum' }, 400)
+      } else if (override !== undefined) {
         respond(res, typeof override === 'function' ? override(params) : override)
       } else if (method === 'getUpdates') {
         polls.add(res)

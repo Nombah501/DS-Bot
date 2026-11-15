@@ -415,6 +415,31 @@ test('the /api/bot route saves a paired Telegram person’s Access list', async 
   assert.deepEqual(s.rt.imView().connections[0].paired[0].access, access)
 })
 
+test('the /api/bot route acknowledges saved Access and logs a failing Topic sweep', async (t) => {
+  const adapter = fakeAdapter()
+  const connect = adapter.connect
+  adapter.connect = (...args) => ({
+    ...connect(...args),
+    renameTopic: async () => { throw new Error('Topic rename offline') },
+  })
+  const s = await start({ adapter })
+  t.after(s.stop)
+  const connection = await add(s)
+  await dm(s, 'u1', 'hello')
+  await s.rt.imEndpoint('im-pair', { id: connection.id, senderId: 'u1', allow: true })
+  const conn = s.rt.state.im.connections[connection.id]
+  conn.chats['dm-u1'].topics = { 101: { target: { botId: 'a' }, name: 'Chief', notified: true } }
+  const warnings = []
+  t.mock.method(s.rt, 'warn', (...args) => warnings.push(args))
+  const access = { botIds: [], roomIds: [] }
+  const result = await s.call('im-access', { id: connection.id, senderId: 'u1', access })
+  assert.equal(result.ok, true, 'saved Access must succeed even if the following Topic rename fails')
+  assert.deepEqual(s.rt.imView().connections[0].paired[0].access, access)
+  assert.deepEqual(JSON.parse(readFileSync(join(s.home, 'state.json'), 'utf8')).im.connections[connection.id].paired[0].access, access)
+  assert.ok(warnings.some(args => args.join(' ').includes('Topic rename offline')), 'the Topic sweep failure must be logged')
+  assert.equal(conn.chats['dm-u1'].topics[101].closed, undefined, 'a failed rename remains eligible for a later sweep')
+})
+
 test('unbound group mention replies unbound and records the chat; binding routes mentions', async (t) => {
   const s = await start()
   t.after(s.stop)

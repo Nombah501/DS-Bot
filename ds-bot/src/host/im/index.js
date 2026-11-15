@@ -671,6 +671,7 @@ export function install(rt) {
       await rt.save()
       for (const [chatKey, chat] of Object.entries(conn.chats ?? {})) {
         if (chat.personId === person.id) await ensurePrivateTopics(conn, chatKey)
+          .catch(error => rt.warn('ds-bot: im topics failed: %s', rt.redactSecrets(String(error?.message ?? error))))
       }
       return true
     },

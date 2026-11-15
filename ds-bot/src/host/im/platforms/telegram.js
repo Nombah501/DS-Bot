@@ -354,8 +354,6 @@ export default {
         return { threadId: topic.message_thread_id }
       },
       renameTopic: (chat, name) => call('editForumTopic', { chat_id: chat.key, ...thread(chat), name: Array.from(name).slice(0, 128).join('') }),
-      closeTopic: chat => call('closeForumTopic', { chat_id: chat.key, ...thread(chat) }),
-      reopenTopic: chat => call('reopenForumTopic', { chat_id: chat.key, ...thread(chat) }),
       sendCard: async (chat, card) => {
         let messageId
         try {

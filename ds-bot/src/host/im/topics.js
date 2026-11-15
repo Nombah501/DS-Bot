@@ -110,13 +110,13 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
       try {
         const handle = handleOf(connId)
         if (handle === undefined) return
-        await handle.reopenTopic(address)
+        await handle.renameTopic(address, next.name)
       } catch (error) {
         if (error?.topicMissing !== true) throw error
         await replace(connId, chatKey, threadId)
         return
       }
-      await changeTopic(connId, chatKey, threadId, topic => { delete topic.closed; delete topic.notified })
+      await changeTopic(connId, chatKey, threadId, topic => { topic.name = next.name; delete topic.closed; delete topic.notified })
     } else if (next.reason !== undefined) {
       if (!next.notified) {
         const handle = handleOf(connId)
@@ -128,9 +128,12 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
       if (plan(connId, chatKey, threadId) === undefined) return
       const handle = handleOf(connId)
       if (handle === undefined) return
-      await handle.closeTopic(address)
-      await changeTopic(connId, chatKey, threadId, topic => { topic.closed = true })
+      const name = textForChat(connections()[connId], chatKey)(`${next.reason}Name`, { name: next.previousName })
+      await handle.renameTopic(address, name)
+      await changeTopic(connId, chatKey, threadId, topic => { topic.name = name; topic.closed = true })
       return
+    } else if (next.notified) {
+      await changeTopic(connId, chatKey, threadId, topic => { delete topic.notified })
     }
     const current = plan(connId, chatKey, threadId)
     if (current !== undefined && current.name !== undefined && current.previousName !== current.name) {

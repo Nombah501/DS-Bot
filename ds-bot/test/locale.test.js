@@ -26,6 +26,25 @@ test('Locale: every locale translates every notice', () => {
   }
 })
 
+test('Locale: revoked and deleted Topic names are localized in every supported language', () => {
+  const names = {
+    ru: ['N — нет доступа', 'N — удалён'],
+    en: ['N — no access', 'N — deleted'],
+    zh: ['N — 无访问权限', 'N — 已删除'],
+    'zh-TW': ['N — 無存取權限', 'N — 已刪除'],
+    ja: ['N — アクセス権なし', 'N — 削除済み'],
+    ko: ['N — 액세스 권한 없음', 'N — 삭제됨'],
+    es: ['N — sin acceso', 'N — eliminado'],
+    fr: ['N — sans accès', 'N — supprimé'],
+    de: ['N — kein Zugriff', 'N — gelöscht'],
+  }
+  assert.deepEqual(Object.keys(names).sort(), [...LOCALES].sort())
+  for (const [locale, expected] of Object.entries(names)) {
+    assert.deepEqual(['topicRevokedName', 'topicDeletedName'].map(key => translate(locale, key, { name: 'N' })), expected, locale)
+  }
+  for (const key of ['topicRevokedName', 'topicDeletedName']) assert.ok(NOTICES.includes(key), `${key} participates in notice coverage`)
+})
+
 test('Locale: notices fill their values and fall back to English, then to the key', () => {
   assert.equal(translate('ru', 'connected', { target: 'Chief' }), 'Подключено — теперь можно общаться с Chief.')
   assert.equal(translate('xx', 'stopped'), translate('en', 'stopped'), 'unknown locale')
