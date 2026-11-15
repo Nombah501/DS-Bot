@@ -109,7 +109,7 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
       if (platform?.statusPanel === true) {
         runner.panels = statusPanels(handle, {
           rt, steps, records: await panelRecords(conn.id),
-          // Every panel send is gated by `deliverable`; the start record only keeps the language defined.
+          // The live panel paths (refresh, find) are gated by `deliverable`; the start record only keeps the language defined.
           textForChat: chat => textForChat(runner.connection() ?? conn, chat.key),
           deliverable: (chat, target) => {
             const current = runner.connection()
