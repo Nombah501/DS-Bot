@@ -78,6 +78,12 @@ async function start({ platform = 'telegram', adapter, seed } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsb-im-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(seed ?? TEAM()))
   const ctx = fakeContext()
+  let route
+  const register = ctx.connection.fetch.register
+  ctx.connection.fetch.register = options => {
+    route = options
+    return register(options)
+  }
   const prompts = []
   const agents = new Map()
   const agentOf = id => {
@@ -108,6 +114,10 @@ async function start({ platform = 'telegram', adapter, seed } = {}) {
   const capabilities = Object.fromEntries(Object.keys(fake.capabilities).map(key => [key, declaration[key]]))
   Object.assign(declaration, fake.capabilities)
   const rt = createRuntime(ctx, { home })
+  const call = async (endpoint, payload) => {
+    const response = await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))
+    return response.json()
+  }
   const emitEvent = (sessionId, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
       if (listener.length >= 2) listener({ id: sessionId }, { type, data, time: Date.now() })
@@ -122,7 +132,7 @@ async function start({ platform = 'telegram', adapter, seed } = {}) {
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
   const flush = async () => { await delay(10) }
-  return { ctx, rt, home, fake, prompts, agents, agentOf, emitEvent, fireApprovals, stop, flush, platform }
+  return { ctx, rt, home, fake, prompts, agents, agentOf, emitEvent, fireApprovals, stop, flush, platform, call }
 }
 
 const FIELDS = { telegram: { token: 'tok-1234' }, dingtalk: { clientId: 'cli-1', clientSecret: 'sec-1234' } }
@@ -390,6 +400,19 @@ test('unpaired DM asks once, allow pairs it, next message prompts the Bot', asyn
   assert.equal(s.prompts[0].mode, 'queue')
   assert.match(s.prompts[0].requestId, /^im:telegram:/)
   assert.deepEqual(s.prompts[0].content, [{ type: 'text', text: 'do a thing' }])
+})
+
+test('the /api/bot route saves a paired Telegram person’s Access list', async (t) => {
+  const s = await start()
+  t.after(s.stop)
+  const connection = await add(s)
+  await dm(s, 'u1', 'hello')
+  await s.rt.imEndpoint('im-pair', { id: connection.id, senderId: 'u1', allow: true })
+  const access = { botIds: ['b'], roomIds: ['r1'] }
+  assert.notDeepEqual(s.rt.imView().connections[0].paired[0].access, access)
+  const result = await s.call('im-access', { id: connection.id, senderId: 'u1', access })
+  assert.equal(result.ok, true, result.error?.message)
+  assert.deepEqual(s.rt.imView().connections[0].paired[0].access, access)
 })
 
 test('unbound group mention replies unbound and records the chat; binding routes mentions', async (t) => {

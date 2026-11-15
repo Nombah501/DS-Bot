@@ -743,6 +743,7 @@ export function install(rt) {
         case 'im-remove':
         case 'im-pair':
         case 'im-unpair':
+        case 'im-access':
         case 'im-chat':
         case 'im-retry':
         case 'im-login-start':
