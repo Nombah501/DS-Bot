@@ -128,8 +128,15 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
       if (plan(connId, chatKey, threadId) === undefined) return
       const handle = handleOf(connId)
       if (handle === undefined) return
-      const name = textForChat(connections()[connId], chatKey)(`${next.reason}Name`, { name: next.previousName })
-      await handle.renameTopic(address, name)
+      const suffix = textForChat(connections()[connId], chatKey)(`${next.reason}Name`, { name: '' })
+      const name = Array.from(next.previousName).slice(0, 128 - Array.from(suffix).length).join('') + suffix
+      try {
+        await handle.renameTopic(address, name)
+      } catch (error) {
+        if (error?.topicMissing !== true) throw error
+        await changeTopic(connId, chatKey, threadId, topic => { topic.closed = true })
+        return
+      }
       await changeTopic(connId, chatKey, threadId, topic => { topic.name = name; topic.closed = true })
       return
     } else if (next.notified) {

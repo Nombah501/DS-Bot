@@ -5,7 +5,7 @@ import { setup, telegram } from './placement-fixture.js'
 import { delivery } from '../src/host/im/delivery.js'
 import { translate } from '../src/host/im/locale.js'
 
-const bench = ({ replaced = [], platform = 'telegram', deliverable = () => true } = {}) => {
+const bench = ({ replaced = [], platform = 'telegram', deliverable = () => true, locale = 'en' } = {}) => {
   const state = { bots: { a: { id: 'a', name: 'Chief' } }, rooms: {}, im: { connections: {} } }
   state.im.connections.c1 = telegram('c1', { platform, chats: { 5: { kind: 'direct', personId: '9', topics: {} } } })
   const calls = []
@@ -23,7 +23,7 @@ const bench = ({ replaced = [], platform = 'telegram', deliverable = () => true 
   }
   const { ensure, restore, bind } = topics(rt, {
     connections: () => state.im.connections, handleOf: () => connected ? handle : undefined,
-    textForChat: () => (key, values) => translate('en', key, values), deliverable, replaced,
+    textForChat: () => (key, values) => translate(locale, key, values), deliverable, replaced,
   })
   return {
     state, calls, saved, handle, rt, ensure, restore, bind,
@@ -87,6 +87,58 @@ test('Topics: a deleted Bot leaves its Topic closed when Access is restored', as
   assert.equal(s.chat().topics[101].name, 'Chief — deleted')
   assert.deepEqual(s.calls.filter(([kind]) => kind === 'notice'), [['notice', 101, 'Topic closed: Chief was deleted.']])
 })
+
+for (const [locale, revoked, deleted] of [
+  ['en', ' — no access', ' — deleted'],
+  ['ru', ' — нет доступа', ' — удалён'],
+]) {
+  for (const [reason, suffix] of [['revoked', revoked], ['deleted', deleted]]) {
+    test(`Topics: a long ${reason} name preserves its ${locale} state suffix within Telegram's limit`, async () => {
+      const s = bench({ locale })
+      s.state.bots.a.name = '\u{1f680}'.repeat(200)
+      await s.ensure(s.conn(), '5')
+      if (reason === 'deleted') delete s.state.bots.a
+      else s.conn().paired[0].access = { botIds: [], roomIds: [] }
+      await s.ensure(s.conn(), '5')
+      const name = s.calls.find(([kind]) => kind === 'rename')[2]
+      assert.ok(Array.from(name).length <= 128, 'the sent state name must fit 128 code points without losing its suffix')
+      assert.equal(name, '\u{1f680}'.repeat(128 - Array.from(suffix).length) + suffix)
+      assert.equal(s.chat().topics[101].name, name, 'the recorded name must equal the name sent to Telegram')
+      assert.equal(s.saved.at(-1).im.connections.c1.chats[5].topics[101].name, name)
+    })
+  }
+}
+
+for (const reason of ['revoked', 'deleted']) {
+  test(`Topics: a missing ${reason} Topic closes after adoption and lets the sweep reach the next chat`, async () => {
+    const s = bench()
+    await s.ensure(s.conn(), '5')
+    s.conn().chats[6] = { kind: 'direct', personId: '9', topics: { 102: { target: { botId: 'a' }, name: 'Chief' } } }
+    if (reason === 'deleted') delete s.state.bots.a
+    else s.conn().paired[0].access = { botIds: [], roomIds: [] }
+    const rename = s.handle.renameTopic
+    s.handle.renameTopic = async (chat, name) => {
+      if (chat.key === '5') {
+        s.adopt()
+        throw Object.assign(new Error('Topic missing'), { topicMissing: true })
+      }
+      return rename(chat, name)
+    }
+    const sweep = async () => {
+      for (const chatKey of Object.keys(s.conn().chats)) await s.ensure(s.conn(), chatKey)
+    }
+    await assert.doesNotReject(sweep(), 'a missing revoked/deleted Topic must not interrupt the remaining chat sweep')
+    assert.equal(s.chat().topics[101].closed, true)
+    assert.equal(s.chat().topics[101].notified, true)
+    assert.equal(s.chat().topics[101].name, 'Chief', 'a missing Topic keeps its last known name')
+    assert.equal(s.saved.at(-1).im.connections.c1.chats[5].topics[101].closed, true)
+    assert.equal(s.conn().chats[6].topics[102].closed, true, 'the following chat must still be reconciled')
+    assert.deepEqual(s.calls.filter(([kind]) => kind === 'rename'), [['rename', 102, `Chief — ${reason === 'deleted' ? 'deleted' : 'no access'}`]])
+    const before = s.calls.length
+    await sweep()
+    assert.equal(s.calls.length, before, 'the next sweep must not call Telegram for either closed Topic')
+  })
+}
 
 test('Topics: allowed live Topic clears a stuck notice so the next revocation notices again', async () => {
   const s = bench()
