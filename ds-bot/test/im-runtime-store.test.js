@@ -226,6 +226,7 @@ test('Runtime store: removal waits for a first load and drops its late holder be
   const removing = b.store.remove('c1')
   gate.resolve()
   await Promise.all([loading, removing])
+  assert.deepEqual((await loading).runtime, {}, 'a load finishing after removal must not hand out the removed file')
   assert.equal(b.store.peek('c1'), undefined, 'a late first load must not restore the removed holder')
   assert.deepEqual([...b.store.loaded()], [])
   await b.store.flush(async () => {})
