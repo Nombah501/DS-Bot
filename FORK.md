@@ -154,6 +154,7 @@ M	ds-bot/src/host/im/platforms/telegram.js
 M	ds-bot/src/host/im/platforms/wecom.js
 M	ds-bot/src/host/im/platforms/weixin.js
 A	ds-bot/src/host/im/rich-format.js
+A	ds-bot/src/host/im/runners.js
 A	ds-bot/src/host/im/status-panel.js
 A	ds-bot/src/host/im/topics.js
 M	ds-bot/src/shared/im-platforms.js
@@ -173,6 +174,7 @@ M	ds-bot/test/im-feishu.test.js
 A	ds-bot/test/im-origin-settings.test.js
 A	ds-bot/test/im-platforms.test.js
 M	ds-bot/test/im-qq.test.js
+A	ds-bot/test/im-runners.test.js
 M	ds-bot/test/im-slack.test.js
 M	ds-bot/test/im-telegram.test.js
 M	ds-bot/test/im-wecom.test.js

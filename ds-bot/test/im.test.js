@@ -346,6 +346,47 @@ test('typing receives the chat key on every platform', async (t) => {
     })
   }
 })
+
+test('a connection removed without sync receives neither pending Draft nor typing', async t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: 1_000_000 })
+  const seed = TEAM()
+  seed.im = { connections: { im_gone: {
+    id: 'im_gone', platform: 'telegram', botId: 'a', settings: {}, secrets: {}, enabled: true,
+    paired: [{ id: 'u1', access: 'all' }], requests: [],
+    chats: { 'dm-u1': { kind: 'direct', personId: 'u1' } }, createdAt: 1,
+  } } }
+  const adapter = fakeAdapter()
+  adapter.capabilities.drafts = true
+  const connected = Promise.withResolvers()
+  const drafted = Promise.withResolvers()
+  const drafts = []
+  const connect = adapter.connect
+  adapter.connect = (...args) => {
+    const handle = connect(...args)
+    handle.draft = async (_chat, draft) => { drafts.push(draft.text); drafted.resolve() }
+    connected.resolve()
+    return handle
+  }
+  const s = await start({ seed, adapter })
+  t.after(s.stop)
+  await connected.promise
+  await new Promise(setImmediate)
+  s.rt.live.set(s.rt.chatOf('a'), { turn: 1 })
+  const stream = frame => {
+    for (const listener of s.ctx.listeners.get('agent/assistant-stream') ?? []) listener({ agent: { id: 'a' }, frame: { attemptId: 'one', ...frame } })
+  }
+  stream({ type: 'start', turn: 1, step: 1 })
+  stream({ type: 'chunk', chunk: { type: 'text-delta', text: 'first' } })
+  await drafted.promise
+  await new Promise(setImmediate)
+  stream({ type: 'chunk', chunk: { type: 'text-delta', text: ' pending' } })
+  t.mock.timers.tick(400)
+  await new Promise(setImmediate)
+  delete s.rt.state.im.connections.im_gone
+  t.mock.timers.tick(3600)
+  await new Promise(setImmediate)
+  assert.deepEqual({ drafts, typing: adapter.typed }, { drafts: ['first'], typing: [] }, 'removed connections must not send a pending Draft or typing')
+})
 test('two concurrent syncs start exactly one adapter', async (t) => {
   const s = await start()
   t.after(s.stop)

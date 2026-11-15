@@ -158,15 +158,15 @@ export function cardJournal({ store, connections, textForChat, textForPerson, ha
     // queue drops is never sent again.
     send: async (conn, cardKey, targets, body, buttons, structured, initiator) => {
       for (const { chat, target, output } of targets) {
-        const handle = handleOf(conn.id)
+        const running = deliveryOf(conn.id) !== undefined
         const privateCard = chat.kind === 'group' && initiator !== undefined && paired(conn, initiator.sender.id)
-          && handle !== undefined && imPlatform(conn.platform)?.privateCards === true
+          && running && imPlatform(conn.platform)?.privateCards === true
         // A Private card keeps its turn's `output`, so its later public copy is checked like any queued output.
         const copy = { target, ...(privateCard ? { receiverUserId: initiator.sender.id, languageCode: initiator.sender.languageCode, privateUntil: Date.now() + PRIVATE_MS, ...(output === undefined ? {} : { output }) } : {}) }
         const text = privateCard ? textForPerson(conn, initiator.sender) : textForChat(conn, chat.key)
         const rendered = typeof body === 'function' ? body(text) : body
         const renderedButtons = typeof buttons === 'function' ? buttons(text) : buttons
-        const card = handle !== undefined && imPlatform(conn.platform)?.richCards === true ? structured?.(text) : undefined
+        const card = running && imPlatform(conn.platform)?.richCards === true ? structured?.(text) : undefined
         const entry = await record(conn.id, cardKey, chat, undefined, rendered, card, undefined, copy)
         void deliveryOf(conn.id)?.output({ chat, target, output }, {
           text: rendered, buttons: renderedButtons, card,

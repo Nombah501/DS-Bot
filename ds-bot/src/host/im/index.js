@@ -12,19 +12,17 @@ import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
 import { cleanAccess, migrateTopics, topics } from './topics.js'
 import { placement } from './placement.js'
-import { draftStream } from './drafts.js'
+import { connectionRunners } from './runners.js'
 import { cardJournal } from './cards.js'
 import { cardKinds } from './card-kinds.js'
 import { chatRecords } from './chat-record.js'
 import { inbound } from './inbound.js'
-import { delivery } from './delivery.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
-import { showStatus, statusData, statusPanels } from './status-panel.js'
+import { showStatus, statusData } from './status-panel.js'
 
 const RECONCILE_MS = 15_000
 const RUNTIME_SAVE_MS = 400
-const TYPING_MS = 4_000
 
 const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase()
 
@@ -172,9 +170,6 @@ export function install(rt) {
   })
 
   // ------------------------------------------------------------------ send out
-  /** @type {Map<string, {handle:any, delivery:any, typing?:any, drafts?:any, panels?:any, privateTimer?:any}>} */
-  const runners = new Map()
-  const statuses = new Map()
   const topicLifecycle = topics(rt, {
     connections, handleOf: id => runners.get(id)?.handle, textForChat,
     deliverable: (conn, address, target) => place.deliverable(conn, address, { target }),
@@ -199,11 +194,6 @@ export function install(rt) {
     if (threadId === undefined) return false
     chat.threadId = threadId
     return true
-  }
-  const setStatus = (id, next) => {
-    // Adapter errors can echo platform responses that quote the token; keep them out of the UI and logs.
-    if (typeof next.error === 'string' && next.error !== '') return statuses.set(id, { ...next, error: rt.redactSecrets(next.error), at: Date.now() })
-    return statuses.set(id, { ...next, at: Date.now() })
   }
 
   const sendText = (conn, chat, body, buttons) => {
@@ -339,179 +329,32 @@ export function install(rt) {
   }
 
   // ---------------------------------------------------------------- lifecycle
-  // `state.im.connections` is replaced wholesale when a save is adopted, so anything
-  // bound at connect time looks the connection up again by id instead of keeping it.
-  const fresh = id => connections()[id]
-  const onStatus = (id) => (next) => {
-    setStatus(id, { state: next.state, error: next.error, at: Date.now() })
-    const conn = fresh(id)
-    if (conn !== undefined && next.account !== undefined && (conn.account?.id !== next.account.id || conn.account?.name !== next.account.name || conn.account?.hasTopicsEnabled !== next.account.hasTopicsEnabled)) {
-      conn.account = next.account
-      void rt.save().catch(() => {})
-      if (imPlatform(conn.platform)?.topics === true) {
-        void Promise.all(Object.keys(conn.chats ?? {}).map(chatKey => ensurePrivateTopics(conn, chatKey)))
-          .catch(error => rt.warn('ds-bot: im topics failed: %s', rt.redactSecrets(String(error?.message ?? error))))
-      }
-    }
-  }
-
-  const busyOf = (target) => {
-    if (target?.botId !== undefined) return rt.live.get(rt.chatOf(target.botId))?.turn !== undefined
-    if (target?.roomId !== undefined) return (rt.roomWorkView?.()[target.roomId] ?? []).length > 0
-    return false
-  }
-
-  const start = async (conn) => {
-    const adapter = adapters[conn.platform]
-    if (adapter === undefined || runners.has(conn.id)) return
-    const platform = imPlatform(conn.platform)
-    // The slot is reserved before the async work: a concurrent sync cannot
-    // start a second adapter for the same connection.
-    const runner = { handle: undefined, delivery: undefined, typing: undefined, drafts: undefined }
-    runner.delivery = delivery({
-      connection: () => fresh(conn.id),
-      placement: place,
-      sending: key => runner.drafts?.sending(key),
-      recoverTopic: chat => recoverTopic(fresh(conn.id) ?? conn, chat),
-      setStatus: next => setStatus(conn.id, next),
-      warn: (template, error) => rt.warn(template, rt.redactSecrets(String(error?.message ?? error))),
-    })
-    runners.set(conn.id, runner)
-    setStatus(conn.id, { state: 'connecting', at: Date.now() })
-    try {
+  const runners = connectionRunners(rt, {
+    connections, platformOf: imPlatform, place, steps: statusSteps, textForChat,
+    wants: conn => adapters[conn.platform] !== undefined && conn.enabled !== false
+      && rt.readOnly() === undefined && hasSecrets(conn),
+    connect: async (conn, handlers) => {
+      const adapter = adapters[conn.platform]
       const env = await envFor(conn)
-      const handle = adapter.connect(fieldsOf(conn), env, {
-        onMessage: (msg) => {
-          const current = fresh(conn.id)
-          return current === undefined ? undefined : incoming.message(current, msg).catch(error => rt.warn('ds-bot: im message failed: %s', error))
-        },
-        onAction: (action) => {
-          const current = fresh(conn.id)
-          return current === undefined ? undefined : onAction(current)(action).catch(error => rt.warn('ds-bot: im action failed: %s', error))
-        },
-        onStop: (event) => {
-          const current = fresh(conn.id)
-          return current === undefined ? undefined : onStop(current)(event).catch(error => rt.warn('ds-bot: im stop failed: %s', error))
-        },
-        onWidgetQuery: action => {
-          const current = fresh(conn.id)
-          return current === undefined ? undefined : onWidgetQuery(current)(action).catch(error => rt.warn('ds-bot: widget query failed: %s', error))
-        },
-        onStatus: onStatus(conn.id),
-      })
-      // A stop() during connect took the slot back: undo the just-started
-      // adapter instead of leaving it running unreachable.
-      if (runners.get(conn.id) !== runner) {
-        void Promise.resolve(handle?.stop?.()).catch(() => {})
-        return
-      }
-      runner.handle = handle
-      if (platform?.drafts === true) {
-        runner.drafts = draftStream({
-          connOf: () => fresh(conn.id) ?? conn,
-          place,
-          send: (chat, draft) => handle.draft(chat, draft),
-          recover: async chat => imPlatform(conn.platform)?.topics === true && await recoverTopic(fresh(conn.id) ?? conn, chat),
-          warn: message => rt.warn('ds-bot: im draft failed: %s', rt.redactSecrets(message)),
-        })
-      }
-      if (platform?.statusPanel === true) {
-        runner.panels = statusPanels(handle, {
-          rt, steps: statusSteps,
-          records: (await runtimeOf(conn.id)).data.panels,
-          textForChat: chat => textForChat(fresh(conn.id) ?? conn, chat.key),
-          deliverable: (chat, target) => {
-            const current = fresh(conn.id)
-            return current !== undefined && place.deliverable(current, chat, { target })
-          },
-          save: () => scheduleWrite(conn.id),
-          recover: chat => recoverTopic(fresh(conn.id) ?? conn, chat),
-          warn: error => rt.warn('ds-bot: Status panel update failed: %s', rt.redactSecrets(String(error?.message ?? error))),
-        })
-      }
-      if (runners.get(conn.id) !== runner) {
-        runner.panels?.stop()
-        runner.drafts?.dispose()
-        return
-      }
-      runner.delivery.attach(handle)
-      if (platform?.topics === true) {
-        for (const chatKey of Object.keys(conn.chats ?? {})) await ensurePrivateTopics(conn, chatKey)
-        if (runners.get(conn.id) !== runner) return
-      }
-      if (platform?.typing === true) {
-        runner.typing = setInterval(() => {
-          const current = fresh(conn.id) ?? conn
-          const owners = [...Object.keys(state.bots).map(botId => ({ botId })), ...Object.keys(state.rooms).map(roomId => ({ roomId }))]
-          for (const owner of owners) {
-            if (!busyOf(owner)) continue
-            const sessionId = owner.botId === undefined ? owner.roomId : rt.chatOf(owner.botId)
-            for (const { chatKey, chat } of place.places(current, owner, sessionId, 'typing')) {
-              void runner.handle.typing({ key: chatKey, kind: chat.kind, title: chat.title, ...(chat.threadId === undefined ? {} : { threadId: chat.threadId }) }).catch?.(() => {})
-            }
-          }
-        }, TYPING_MS)
-        runner.typing.unref?.()
-      }
-      if (platform?.privateCards === true) {
-        runner.privateTimer = setInterval(() => {
-          const current = fresh(conn.id)
-          if (current !== undefined) void cards.expirePrivate(current).catch(error => rt.warn('ds-bot: Private card fallback failed: %s', error))
-        }, 1000)
-        runner.privateTimer.unref?.()
-      }
-      await syncCards()
-    } catch (error) {
-      if (runners.get(conn.id) === runner) await stop(conn.id)
-      setStatus(conn.id, { state: 'error', error: String(error?.message ?? error).slice(0, 300), at: Date.now() })
-    }
-  }
-  const stop = async (id) => {
-    const runner = runners.get(id)
-    runners.delete(id)
-    const delivered = runner?.delivery.close()
-    if (runner?.typing !== undefined) clearInterval(runner.typing)
-    clearInterval(runner?.privateTimer)
-    runner?.panels?.stop()
-    runner?.drafts?.dispose()
-    await Promise.resolve(runner?.handle?.stop?.()).catch(() => {})
-    await delivered
-    if (statuses.get(id)?.state !== 'error') setStatus(id, { state: 'off', at: Date.now() })
-  }
-
-  // Syncs run one behind the other: endpoints, onSaved and the interval can all
-  // fire while a sync is still starting an adapter, and they must see its
-  // reserved slots rather than start a second adapter.
-  let syncing = Promise.resolve()
-  const sync = () => {
-    const run = syncing.then(async () => {
-      const conns = connections()
+      return adapter.connect(fieldsOf(conn), env, handlers)
+    },
+    panelRecords: async id => (await runtimeOf(id)).data.panels,
+    savePanels: scheduleWrite,
+    ensurePrivateTopics, recoverTopic,
+    expirePrivate: conn => cards.expirePrivate(conn),
+    syncCards,
+    migrate: () => {
       if (topicsMigrated && rt.readOnly() === undefined) {
         topicsMigrated = false
-        await rt.save()
+        return rt.save()
       }
-      for (const conn of Object.values(conns)) {
-        const wants = stopped !== true && adapters[conn.platform] !== undefined && conn.enabled !== false
-          && rt.readOnly() === undefined && hasSecrets(conn)
-        if (wants && !runners.has(conn.id)) await start(conn)
-        else if (!wants && runners.has(conn.id)) await stop(conn.id)
-        if (wants && imPlatform(conn.platform)?.topics === true) {
-          for (const chatKey of Object.keys(conn.chats ?? {})) await ensurePrivateTopics(conn, chatKey)
-        }
-      }
-      for (const id of [...runners.keys()]) if (conns[id] === undefined) await stop(id)
-      for (const id of [...statuses.keys()]) if (conns[id] === undefined) statuses.delete(id)
-      for (const conn of Object.values(conns)) {
-        if (conn.enabled === false || !runners.has(conn.id)) {
-          if (statuses.get(conn.id)?.state !== 'error') setStatus(conn.id, { state: 'off', at: Date.now() })
-        }
-      }
-    })
-    syncing = run.catch(() => {})
-    return run
-  }
-
-  let stopped = false
+    },
+    message: (conn, msg) => incoming.message(conn, msg),
+    action: (conn, action) => onAction(conn)(action),
+    stop: (conn, event) => onStop(conn)(event),
+    widgetQuery: (conn, action) => onWidgetQuery(conn)(action),
+  })
+  const sync = runners.sync
 
   // ---------------------------------------------------------------- endpoints
   const secretName = (conn, key) => `IM_${conn.platform.toUpperCase()}_${conn.id.slice(3, 9).toUpperCase()}_${secretField(key)}`
@@ -620,15 +463,14 @@ export function install(rt) {
         }
       }
       await rt.save()
-      if (runners.has(conn.id)) await stop(conn.id)
-      await sync()
+      await runners.restart(conn.id)
       return viewOf(conn)
     },
     async 'im-remove'(body) {
       const id = String(body.id ?? '')
       const conn = connections()[id]
       if (conn === undefined) throw new Error('No such IM bot')
-      await stop(id)
+      await runners.stop(id)
       for (const name of Object.values(conn.secrets ?? {})) {
         await rt.secretEndpoint('secret-delete', { name }).catch(() => {})
       }
@@ -703,8 +545,7 @@ export function install(rt) {
     async 'im-retry'(body) {
       const conn = connections()[String(body.id ?? '')]
       if (conn === undefined) throw new Error('No such IM bot')
-      if (runners.has(conn.id)) await stop(conn.id)
-      await sync()
+      await runners.restart(conn.id)
       return true
     },
     async 'im-login-start'(body) {
@@ -775,9 +616,8 @@ export function install(rt) {
   // ----------------------------------------------------------------- outbound
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     const key = JSON.stringify([agent.id, frame.attemptId])
-    for (const conn of Object.values(connections())) {
-      const runner = runners.get(conn.id)
-      if (imPlatform(conn.platform)?.drafts !== true || runner?.drafts === undefined) continue
+    for (const { conn, runner } of runners.running()) {
+      if (imPlatform(conn.platform)?.drafts !== true || runner.drafts === undefined) continue
       if (frame.type === 'start') {
         const botId = rt.chatOwners.get(agent.id)
         const roomId = rt.groupOwners.get(agent.id)?.roomId
@@ -795,7 +635,7 @@ export function install(rt) {
     if (event.type === 'turn/start' || event.type === 'turn/end') statusSteps.delete(session.id)
     place.sessionEvent(session, event)
     if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
-      for (const runner of runners.values()) runner.drafts?.endStep(session.id, event.data?.turn, event.data?.step)
+      for (const { runner } of runners.running()) runner.drafts?.endStep(session.id, event.data?.turn, event.data?.step)
     }
     const botId = rt.chatOwners.get(session.id)
     if (botId === undefined) {
@@ -809,10 +649,9 @@ export function install(rt) {
     for (const item of rt.displayItems(session.id, [event])) {
       if (item.kind !== 'bot' && item.kind !== 'view') continue
       const body = item.kind === 'bot' ? item.text : viewCardText({ title: item.title, view: item.view }) || (item.title ?? '')
-      for (const conn of Object.values(connections())) {
-        if (!runners.has(conn.id)) continue
+      for (const { conn, runner } of runners.running()) {
         for (const destination of place.places(conn, { botId }, session.id, item.kind === 'view' ? 'card' : 'message')) {
-          void runners.get(conn.id).delivery.output(destination, { text: body, rich: item.kind === 'bot' })
+          void runner.delivery.output(destination, { text: body, rich: item.kind === 'bot' })
         }
       }
     }
@@ -821,10 +660,9 @@ export function install(rt) {
   rt.onRoomLine((room, line) => {
     if (line.botId === undefined || line.kind !== undefined || typeof line.text !== 'string' || line.text.trim() === '') return
     const body = `**${line.who}**: ${line.text}`
-    for (const conn of Object.values(connections())) {
-      if (!runners.has(conn.id)) continue
+    for (const { conn, runner } of runners.running()) {
       for (const destination of place.places(conn, { roomId: room.id }, undefined, 'message')) {
-        void runners.get(conn.id).delivery.output(destination, { text: body, rich: true })
+        void runner.delivery.output(destination, { text: body, rich: true })
       }
     }
   })
@@ -844,9 +682,8 @@ export function install(rt) {
     interval.unref?.()
     void rt.load().then(() => sync()).catch(() => {})
     return () => {
-      stopped = true
       clearInterval(interval)
-      return Promise.all([...runners.keys()].map(stop)).then(async () => {
+      return runners.teardown().then(async () => {
         await Promise.all(runtimeLoads.values())
         await cards.flushClaims()
         for (const held of runtimes.values()) if (held.timer !== undefined) clearTimeout(held.timer)
@@ -856,7 +693,7 @@ export function install(rt) {
   }, 'ds-bot: im')
 
   const imView = () => ({ connections: Object.values(connections()).map(viewOf), platforms: IM_PLATFORMS.filter(platform => adaptersFor().includes(platform.id)).map(platform => platform.id) })
-  const imStatusView = () => Object.fromEntries([...statuses.entries()].map(([id, status]) => [id, { state: status.state, ...(status.error !== undefined ? { error: status.error } : {}), at: status.at }]))
+  const imStatusView = runners.statusView
   const imQuestionClaimed = kinds.questionClaimed
   const imQuestionAnswered = kinds.questionAnswered
 

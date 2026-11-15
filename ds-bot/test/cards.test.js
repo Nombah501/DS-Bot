@@ -8,7 +8,7 @@ const ann = { id: '9', languageCode: 'en' }
 
 // A Card journal over one Telegram connection, an in-memory runtime store and a
 // scripted adapter: queued jobs wait in `queue` until `deliver` sends the oldest.
-const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded = false, loadGate, onLoad = () => {}, onSave = () => {} } = {}) => {
+const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded = false, loadGate, onLoad = () => {}, onSave = () => {}, connected = true, running = true } = {}) => {
   const data = { cards: {} }
   let loaded = !unloaded
   const calls = []
@@ -33,8 +33,8 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded 
     connections: () => ({ [conn.id]: conn }),
     textForChat: () => key => `<${key}>`,
     textForPerson: () => key => `<${key}>`,
-    handleOf: () => handle,
-    deliveryOf: () => ({ output: (place, content, { sent }) => { queue.push({ place, job: { ...content, sent } }) } }),
+    handleOf: () => connected ? handle : undefined,
+    deliveryOf: () => running ? { output: (place, content, { sent }) => { queue.push({ place, job: { ...content, sent } }) } } : undefined,
     paired: (_conn, id) => conn.paired.some(person => person.id === id),
     sourceOpen: () => open,
     warn: () => {},
@@ -59,6 +59,28 @@ test('Card journal: a Card is recorded before it is queued, and learns its messa
   await b.deliver()
   assert.deepEqual(b.data.cards['q:1'].map(({ chatKey, threadId, messageId, target }) => ({ chatKey, threadId, messageId, target })),
     [{ chatKey: '-60', threadId: 40, messageId: 700, target: { botId: 'a' } }])
+})
+
+test('Card journal: a reserved runner queues rich Cards before connect', async () => {
+  const b = bench({ connected: false })
+  await sendQuestion(b, { key: '5', kind: 'direct', threadId: 101 })
+  assert.deepEqual(b.queue[0].job.card, question, 'the queued Card must keep its rich rendering before connect')
+})
+
+test('Card journal: a reserved runner queues the Initiator private copy before connect', async () => {
+  const b = bench({ connected: false })
+  await sendQuestion(b, forum, { sender: ann })
+  assert.equal(b.queue[0].job.receiverUserId, '9', 'the queued group Card must stay private before connect')
+  assert.deepEqual(b.queue[0].job.card, question)
+  assert.equal(b.data.cards['q:1'][0].receiverUserId, '9')
+})
+
+test('Card journal: without a runner a Card is recorded without rich or private rendering', async () => {
+  const b = bench({ connected: false, running: false })
+  await sendQuestion(b, forum, { sender: ann })
+  assert.equal(b.queue.length, 0)
+  assert.equal(b.data.cards['q:1'][0].card, undefined)
+  assert.equal(b.data.cards['q:1'][0].receiverUserId, undefined)
 })
 
 test('Card journal: the Settled card rule keeps only the chosen options, never Done', () => {
