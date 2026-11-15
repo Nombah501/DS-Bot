@@ -100,5 +100,6 @@ export function stops(rt, { cards, place, runnerOf, sendText, textForPerson, tex
     if (event.type === 'step/start' && Number.isSafeInteger(event.data?.step)) steps.set(session.id, event.data.step)
     if (event.type === 'turn/start' || event.type === 'turn/end') steps.delete(session.id)
   }
-  return { target: stopTarget, draft, widgetQuery, handles, unpaired, press, show, sourceOpen: open, sessionEvent, steps }
+  // The reply rule (toast where the platform answers presses, else a chat notice) is shared with the forum bind Card.
+  return { target: stopTarget, draft, widgetQuery, handles, unpaired, press, show, sourceOpen: open, sessionEvent, steps, reply }
 }

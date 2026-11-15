@@ -131,11 +131,6 @@ export function install(rt) {
     return undefined
   }
 
-  const sendCardReply = async (conn, chat, body, action) => {
-    // Message replies have no action; even on callback-capable platforms this is optional.
-    if (imPlatform(conn.platform)?.callbackAnswer === true && typeof action?.answer === 'function') return action.answer(body)
-    return sendText(conn, chat, body)
-  }
   const kinds = cardKinds(rt, {
     cards, place, connections,
     handleOf: id => runners.get(id)?.handle,
@@ -147,7 +142,7 @@ export function install(rt) {
     sendText, textForPerson, textForChat, sourceOpen: kinds.sourceOpen,
   })
 
-  const forumBind = forumBinder(rt, { connections, topics: topicLifecycle, handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
+  const forumBind = forumBinder(rt, { connections, topics: topicLifecycle, handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply: stopping.reply, textForPerson, may: place.may })
 
   const incoming = inbound(
     rt,
