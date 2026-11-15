@@ -121,7 +121,13 @@ export function topics(rt, { connections, handleOf, textForChat, deliverable, re
       if (!next.notified) {
         const handle = handleOf(connId)
         if (handle === undefined) return
-        await handle.send(address, { text: textForChat(connections()[connId], chatKey)(next.reason, { name: next.previousName }) })
+        try {
+          await handle.send(address, { text: textForChat(connections()[connId], chatKey)(next.reason, { name: next.previousName }) })
+        } catch (error) {
+          if (error?.topicMissing !== true) throw error
+          await changeTopic(connId, chatKey, threadId, topic => { topic.closed = true })
+          return
+        }
         if (handleOf(connId) === undefined) return
         await changeTopic(connId, chatKey, threadId, topic => { topic.notified = true })
       }

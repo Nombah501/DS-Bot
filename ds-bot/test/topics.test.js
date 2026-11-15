@@ -109,27 +109,30 @@ for (const [locale, revoked, deleted] of [
   }
 }
 
-for (const reason of ['revoked', 'deleted']) {
-  test(`Topics: a missing ${reason} Topic closes after adoption and lets the sweep reach the next chat`, async () => {
+for (const [reason, method] of [
+  ['revoked', 'send'], ['deleted', 'send'],
+  ['revoked', 'renameTopic'], ['deleted', 'renameTopic'],
+]) {
+  test(`Topics: a missing ${reason} Topic during ${method} closes after adoption and lets the sweep reach the next chat`, async () => {
     const s = bench()
     await s.ensure(s.conn(), '5')
     s.conn().chats[6] = { kind: 'direct', personId: '9', topics: { 102: { target: { botId: 'a' }, name: 'Chief' } } }
     if (reason === 'deleted') delete s.state.bots.a
     else s.conn().paired[0].access = { botIds: [], roomIds: [] }
-    const rename = s.handle.renameTopic
-    s.handle.renameTopic = async (chat, name) => {
+    const perform = s.handle[method]
+    s.handle[method] = async (chat, body) => {
       if (chat.key === '5') {
         s.adopt()
-        throw Object.assign(new Error('Topic missing'), { topicMissing: true })
+        throw Object.assign(new Error('message thread not found'), { topicMissing: true })
       }
-      return rename(chat, name)
+      return perform(chat, body)
     }
     const sweep = async () => {
       for (const chatKey of Object.keys(s.conn().chats)) await s.ensure(s.conn(), chatKey)
     }
     await assert.doesNotReject(sweep(), 'a missing revoked/deleted Topic must not interrupt the remaining chat sweep')
     assert.equal(s.chat().topics[101].closed, true)
-    assert.equal(s.chat().topics[101].notified, true)
+    assert.equal(s.chat().topics[101].notified, method === 'send' ? undefined : true, 'an undelivered notice must not be marked sent')
     assert.equal(s.chat().topics[101].name, 'Chief', 'a missing Topic keeps its last known name')
     assert.equal(s.saved.at(-1).im.connections.c1.chats[5].topics[101].closed, true)
     assert.equal(s.conn().chats[6].topics[102].closed, true, 'the following chat must still be reconciled')
