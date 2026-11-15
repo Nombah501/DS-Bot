@@ -17,6 +17,12 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
 
+### In 0.3.6-tb.7
+
+- **Cards sent while a connection is starting keep their form:** a question or approval Card sent while the Telegram connection was still connecting went out as plain text and, in a group, to everyone instead of only to its Initiator. It now goes out as the rich Card and the Initiator's Private card, like any other.
+- **A removed connection goes quiet and stays removed:** a connection removed from the team's state stops sending Drafts and typing at once instead of until the next sync. Its runtime file is no longer brought back by a save, load or late message that was still under way when it was removed.
+- Internal: each connection's lifecycle and its runtime file now have their own modules (`runners.js`, `runtime-store.js`), with tests that do not need the fake Telegram server; a flaky group-pause test waits for its event instead of a fixed delay.
+
 ### In 0.3.6-tb.6
 
 - **Revoked private Topics are renamed, not closed:** Telegram closes and reopens Topics only in forum supergroups, so revoking a person's Access failed on the close and left the Topic open. The Topic now gets the notice and a localized name such as «Atlas — no access» (or «— deleted» for a deleted Bot or group); restoring Access gives it back its name. This replaces 0.3.6-tb.4's `reopenTopic`. Saving an Access list no longer reports a Topic error to the page once the list is saved, and a revoked Topic the person already deleted no longer stops the Topic sweep.
@@ -56,13 +62,13 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 
 ## Install into a DSH profile
 
-Download the plugin tarball from [release v0.3.6-tb.6](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.6), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
+Download the plugin tarball from [release v0.3.6-tb.7](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.7), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
 
 Run these yourself in a download directory (stop the running DSH instance before replacing its plugin):
 
 ```sh
-gh release download v0.3.6-tb.6 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.6.tgz'
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.6.tgz"
+gh release download v0.3.6-tb.7 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.7.tgz'
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.7.tgz"
 npx @deepseek-ai/dsh@0.2.2-rc.1 web
 ```
 
