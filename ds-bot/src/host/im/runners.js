@@ -10,6 +10,8 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
   const statuses = new Map()
   let stopped = false
   let syncing = Promise.resolve()
+  // `state.im.connections` is replaced wholesale when a save is adopted, so anything
+  // bound at connect time looks the connection up again by id instead of keeping it.
   const fresh = id => connections()[id]
   const setStatus = (id, next) => {
     // Adapter errors can echo platform responses that quote the token; keep them out of the UI and logs.
@@ -84,6 +86,8 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
         },
         onStatus: onStatus(conn.id),
       })
+      // A stop() during connect took the slot back: undo the just-started
+      // adapter instead of leaving it running unreachable.
       if (runners.get(conn.id) !== runner) {
         void Promise.resolve(handle?.stop?.()).catch(() => {})
         return
@@ -105,7 +109,8 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
       if (platform?.statusPanel === true) {
         runner.panels = statusPanels(handle, {
           rt, steps, records: await panelRecords(conn.id),
-          textForChat: chat => textForChat(runner.connection(), chat.key),
+          // Every panel send is gated by `deliverable`; the start record only keeps the language defined.
+          textForChat: chat => textForChat(runner.connection() ?? conn, chat.key),
           deliverable: (chat, target) => {
             const current = runner.connection()
             return current !== undefined && place.deliverable(current, chat, { target })
@@ -153,6 +158,9 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
       setStatus(conn.id, { state: 'error', error: String(error?.message ?? error).slice(0, 300), at: Date.now() })
     }
   }
+  // Syncs run one behind the other: endpoints, onSaved and the interval can all
+  // fire while a sync is still starting an adapter, and they must see its
+  // reserved slots rather than start a second adapter.
   const sync = () => {
     const run = syncing.then(async () => {
       const conns = connections()

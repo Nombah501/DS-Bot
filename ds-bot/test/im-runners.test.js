@@ -177,7 +177,7 @@ test('Connection runners: stop and teardown dispose all parts and timers, then s
   assert.equal(b.calls.filter(call => call === 'stop').length, 2)
 })
 
-test('Connection runners: restart stops before reconnect, migration runs first, and status errors stay redacted', async t => {
+test('Connection runners: restart stops the old adapter and connects a new one, migration runs first, and status errors stay redacted', async t => {
   const b = bench(t)
   await b.runners.sync()
   assert.equal(b.calls[0], 'migrate')

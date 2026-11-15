@@ -383,7 +383,7 @@ test('a connection removed without sync receives neither pending Draft nor typin
   t.mock.timers.tick(400)
   await new Promise(setImmediate)
   delete s.rt.state.im.connections.im_gone
-  t.mock.timers.tick(3600)
+  t.mock.timers.tick(4600)
   await new Promise(setImmediate)
   assert.deepEqual({ drafts, typing: adapter.typed }, { drafts: ['first'], typing: [] }, 'removed connections must not send a pending Draft or typing')
 })
