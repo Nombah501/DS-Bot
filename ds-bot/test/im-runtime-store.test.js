@@ -231,3 +231,50 @@ test('Runtime store: removal waits for a first load and drops its late holder be
   await b.store.flush(async () => {})
   await assert.rejects(fs.stat(b.path('c1')), { code: 'ENOENT' })
 })
+
+test('Runtime store: reads and saves after removal never retain a holder or recreate its file', async t => {
+  const b = await bench(t)
+  await b.seed('c1', { ...empty(), runtime: { cursor: 'old' } })
+  await b.store.of('c1')
+  await b.store.remove('c1')
+  const data = await b.store.of('c1')
+  assert.deepEqual(data, empty())
+  const env = await b.store.runtime('c1')
+  assert.deepEqual(env.get(), {})
+  data.cards.question = [{ answer: 'late' }]
+  env.set({ cursor: 'late' })
+  b.store.save('c1')
+  await b.store.saveNow('c1')
+  await b.store.flush(async () => {})
+  await assert.rejects(fs.stat(b.path('c1')), { code: 'ENOENT' }, 'reads and saves after removal must not recreate the file')
+  assert.equal(b.store.peek('c1'), undefined, 'reads after removal must not retain a holder')
+  assert.deepEqual([...b.store.loaded()], [])
+  assert.deepEqual(await b.store.of('c1'), empty(), 'later reads must not retain detached mutations')
+})
+
+test('Runtime store: a load started while removal awaits rm never installs a holder', async t => {
+  const deleting = Promise.withResolvers()
+  const gate = Promise.withResolvers()
+  const b = await bench(t, { rm: async (...args) => {
+    deleting.resolve()
+    await gate.promise
+    return fs.rm(...args)
+  } })
+  t.after(() => gate.resolve())
+  await b.seed('c1', { ...empty(), runtime: { cursor: 'old' } })
+  const removing = b.store.remove('c1')
+  await deleting.promise
+  const data = await b.store.of('c1')
+  const env = await b.store.runtime('c1')
+  gate.resolve()
+  await removing
+  data.requests.late = { botId: 'a' }
+  env.set({ cursor: 'late' })
+  b.store.save('c1')
+  await b.store.saveNow('c1')
+  await b.store.flush(async () => {})
+  await assert.rejects(fs.stat(b.path('c1')), { code: 'ENOENT' }, 'a load during rm must not recreate the removed file')
+  assert.equal(b.store.peek('c1'), undefined, 'a load during rm must not install its holder')
+  assert.deepEqual([...b.store.loaded()], [])
+  assert.deepEqual(data.runtime, {}, 'a load during rm must not read the removed file')
+})

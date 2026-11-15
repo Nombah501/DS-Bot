@@ -5,31 +5,35 @@ import { replaceFile } from '../files.js'
 
 const SAVE_MS = 400
 const objectSection = value => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+const newHolder = data => ({
+  data: {
+    runtime: objectSection(data?.runtime),
+    cards: objectSection(data?.cards),
+    requests: objectSection(data?.requests),
+    turns: objectSection(data?.turns),
+    panels: Array.isArray(data?.panels) ? data.panels : [],
+  },
+  timer: undefined,
+  writing: Promise.resolve(),
+})
 
 export function runtimeStore(rt, { fs = fsp } = {}) {
   const dir = join(rt.home, 'im')
   const holders = new Map()
   const loads = new Map()
   const removals = new Map()
+  // Connection ids never return; late callers must not reopen their runtime files.
+  const removed = new Set()
   const holderOf = id => {
+    if (removed.has(id)) return Promise.resolve(newHolder())
     const held = holders.get(id)
     if (held !== undefined) return Promise.resolve(held)
     if (loads.has(id)) return loads.get(id)
     const loading = (async () => {
       let data
       try { data = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) } catch { data = undefined }
-      const loaded = {
-        data: {
-          runtime: objectSection(data?.runtime),
-          cards: objectSection(data?.cards),
-          requests: objectSection(data?.requests),
-          turns: objectSection(data?.turns),
-          panels: Array.isArray(data?.panels) ? data.panels : [],
-        },
-        timer: undefined,
-        writing: Promise.resolve(),
-      }
-      holders.set(id, loaded)
+      const loaded = newHolder(removed.has(id) ? undefined : data)
+      if (!removed.has(id)) holders.set(id, loaded)
       return loaded
     })().finally(() => loads.delete(id))
     loads.set(id, loading)
@@ -37,7 +41,7 @@ export function runtimeStore(rt, { fs = fsp } = {}) {
   }
   const saveNow = async id => {
     const held = holders.get(id)
-    if (held === undefined || removals.has(id)) return
+    if (held === undefined || removed.has(id)) return
     const run = held.writing.then(async () => {
       if (rt.readOnly() !== undefined) return
       await fs.mkdir(dir, { recursive: true })
@@ -56,7 +60,7 @@ export function runtimeStore(rt, { fs = fsp } = {}) {
   }
   const save = id => {
     const held = holders.get(id)
-    if (held === undefined || held.timer !== undefined || removals.has(id)) return
+    if (held === undefined || held.timer !== undefined || removed.has(id)) return
     held.timer = setTimeout(() => {
       held.timer = undefined
       void saveNow(id).catch(error => rt.warn('ds-bot: im runtime %s not saved: %s', id, error))
@@ -65,18 +69,19 @@ export function runtimeStore(rt, { fs = fsp } = {}) {
   }
   return {
     of: async id => (await holderOf(id)).data,
-    peek: id => holders.get(id)?.data,
-    * loaded() { for (const [id, held] of holders) yield [id, held.data] },
+    peek: id => removed.has(id) ? undefined : holders.get(id)?.data,
+    * loaded() { for (const [id, held] of holders) if (!removed.has(id)) yield [id, held.data] },
     save, saveNow,
     runtime: async id => {
       const held = await holderOf(id)
       return { get: () => held.data.runtime, set: patch => { Object.assign(held.data.runtime, patch); save(id) } }
     },
     remove: id => {
+      removed.add(id)
       if (removals.has(id)) return removals.get(id)
       clearTimeout(holders.get(id)?.timer)
       const removing = (async () => {
-        // A late first load may install its holder; drop it only after both queues drain.
+        // Work already using the old holder must drain before its file is deleted.
         await loads.get(id)
         const held = holders.get(id)
         clearTimeout(held?.timer)
