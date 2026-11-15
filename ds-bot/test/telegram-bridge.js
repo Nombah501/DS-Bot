@@ -7,6 +7,33 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
+const allChats = ['private', 'group', 'supergroup', 'forum']
+// Production Bot API scopes; null means the method has no chat_id.
+const methods = {
+  answerCallbackQuery: null, // https://core.telegram.org/bots/api#answercallbackquery
+  answerWidgetQuery: null, // https://core.telegram.org/bots/api#answerwidgetquery
+  closeForumTopic: ['forum'], // https://core.telegram.org/bots/api#closeforumtopic
+  createForumTopic: ['private', 'forum'], // https://core.telegram.org/bots/api#createforumtopic
+  deleteEphemeralMessage: allChats, // https://core.telegram.org/bots/api#deleteephemeralmessage
+  editEphemeralMessageText: allChats, // https://core.telegram.org/bots/api#editephemeralmessagetext
+  editForumTopic: ['private', 'forum'], // https://core.telegram.org/bots/api#editforumtopic
+  editMessageText: allChats, // https://core.telegram.org/bots/api#editmessagetext
+  editMessageWidgetData: ['private'], // https://core.telegram.org/bots/api#editmessagewidgetdata
+  getChatMember: allChats, // https://core.telegram.org/bots/api#getchatmember
+  getFile: null, // https://core.telegram.org/bots/api#getfile
+  getMe: null, // https://core.telegram.org/bots/api#getme
+  getUpdates: null, // https://core.telegram.org/bots/api#getupdates
+  pinChatMessage: allChats, // https://core.telegram.org/bots/api#pinchatmessage
+  reopenForumTopic: ['forum'], // https://core.telegram.org/bots/api#reopenforumtopic
+  sendChatAction: allChats, // https://core.telegram.org/bots/api#sendchataction
+  sendMessage: allChats, // https://core.telegram.org/bots/api#sendmessage
+  sendRichMessage: allChats, // https://core.telegram.org/bots/api#sendrichmessage
+  sendRichMessageDraft: ['private'], // https://core.telegram.org/bots/api#sendrichmessagedraft
+  sendWidget: ['private'], // https://core.telegram.org/bots/api#sendwidget
+}
+// Widget edits inherit production availability: https://core.telegram.org/bots/widgets#availability
+// Ephemeral edits/deletes specify no narrower chat scope; callback replies also exist in private chats.
+
 export async function until(read, timeout = 3000) {
   const deadline = performance.now() + timeout
   do {
@@ -22,6 +49,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   const calls = []
   const updates = []
   const replies = { ...apiReplies }
+  const chats = new Map()
   const polls = new Set()
   let updateId = 0
   let messageId = 0
@@ -44,8 +72,17 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
       const params = JSON.parse(body || '{}')
       calls.push({ method, params })
       const override = replies[method]
-      if (['closeForumTopic', 'reopenForumTopic'].includes(method) && Number(params.chat_id) > 0) {
-        respond(res, { ok: false, error_code: 400, description: 'Bad Request: the chat is not a supergroup forum' }, 400)
+      const kinds = methods[method]
+      const chat = chats.get(String(params.chat_id))
+      const kind = Number(params.chat_id) > 0 ? 'private'
+        : chat?.type === 'supergroup' && chat.is_forum === true ? 'forum' : (chat?.type ?? 'group')
+      if (!Object.hasOwn(methods, method)) {
+        respond(res, { ok: false, error_code: 400, description: 'Bad Request: method not found' }, 400)
+      } else if (kinds !== null && !kinds.includes(kind)) {
+        const description = kinds.includes('forum')
+          ? 'Bad Request: the chat is not a supergroup forum'
+          : 'Bad Request: method is available only for private chats'
+        respond(res, { ok: false, error_code: 400, description }, 400)
       } else if (override !== undefined) {
         respond(res, typeof override === 'function' ? override(params) : override)
       } else if (method === 'getUpdates') {
@@ -108,6 +145,8 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
   let rt = boot()
   const request = (method, predicate = () => true, after = 0) => until(() => calls.slice(after).find(call => call.method === method && predicate(call.params)), timeout)
   const pushUpdate = update => {
+    const chat = update.message?.chat ?? update.callback_query?.message?.chat ?? update.widget_query?.chat ?? update.stopped_message_generation?.chat
+    if (chat !== undefined) chats.set(String(chat.id), chat)
     updates.push({ update_id: ++updateId, ...update })
     drain()
   }
@@ -141,6 +180,7 @@ export async function startBridge(t, { seed, getMe = { id: 7, username: 'fakebot
     if (!result.ok) throw new Error(result.error.message)
   }
   return {
+    api: `http://127.0.0.1:${server.address().port}/botS1-FAKE-TOKEN`,
     get ctx() { return ctx }, get rt() { return rt }, home, calls, replies, prompts, agents, agentOf, connection, request, pushUpdate, message, sessionEvent,
     get activePolls() { return polls.size },
     restart: async () => {
