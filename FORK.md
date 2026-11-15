@@ -76,19 +76,19 @@ Development lives in the `ds-bot/` subtree of [DSH-Plugins](https://github.com/N
 
 Keep `app/package.json` and both root version fields in `app/package-lock.json` in step with `ds-bot/package.json`, including the `-tb.N` suffix. Upstream's Desktop app profile test requires matching app/plugin versions even for plugin-only releases. The integration repository's `scripts/check.sh` checks that invariant without installing the app.
 
-From a clean, committed DSH-Plugins checkout:
+In DSH-Plugins, first write the human release note under `### In <upstream>-tb.<N>`, then bump, review and commit. Publish from a clean, committed `telegram-bridge-fix/ds-bot` checkout:
 
 ```sh
-scripts/check.sh
-node --test scripts/publish-fork.test.mjs
-scripts/publish-fork.sh
+scripts/release.sh bump <N>
+# Review and commit the version/install-section changes and human release note.
+scripts/release.sh publish /absolute/path/to/notes.md
 ```
 
-The publisher splits the current committed branch at `ds-bot/`, fetches only the fork's `telegram-bridge`, checks ancestry, then performs an ordinary fast-forward-only push. Divergence stops with an error; merge the fork history, never force-push. It refuses dirty/untracked work and never updates upstream or fork `main`. Pack `ds-bot/ds-bot` with `npm pack` from that gated commit and attach the tarball to the matching fork release. Disable the fork's inherited `release.yml` workflow before publishing: it is upstream's npm/desktop/mobile publication pipeline, not this fork's tarball process. Leave its test workflow enabled.
+The release script runs the source gate, publisher tests and fork inventory check, pushes the integration branch, publishes the committed subtree, packs and verifies the plugin tarball in a temporary directory, then creates the matching GitHub Release at the published split with generated Validation, Source and SHA-256 lines appended to the supplied notes. Its subtree publisher fetches only the fork's `telegram-bridge`, checks ancestry, and performs an ordinary fast-forward-only push. Divergence stops with an error; merge the fork history, never force-push. Dirty/untracked work is refused; upstream and fork `main` are never updated. Disable the fork's inherited `release.yml` workflow before publishing: it is upstream's npm/desktop/mobile publication pipeline, not this fork's tarball process. Leave its test workflow enabled.
 
 The [upstream watcher](https://github.com/Nombah501/DS-Bot/actions/workflows/upstream-watch.yml) checks stable releases daily at 06:23 UTC and on manual dispatch. A [“Sync with upstream vX.Y.Z” issue](https://github.com/Nombah501/DS-Bot/issues?q=is%3Aissue+%22Sync+with+upstream%22), with release notes and a tag comparison, is the signal to follow the sync runbook. Existing open or closed issues suppress duplicates. It needs only the built-in `GITHUB_TOKEN`, never merges or publishes, and never changes `.upstream-release`.
 
-After packing, run `node scripts/check-fork-package.mjs /absolute/path/to/ds-bot-0.3.6-tb.6.tgz` in DSH-Plugins. It extracts into a temporary directory, compares the exact `npm pack --dry-run` inventory and every file's bytes, and checks package exports/bundles without accessing a DSH profile.
+`scripts/release.sh publish` runs `node scripts/check-fork-package.mjs <tarball>` automatically: extraction into a temporary directory, exact `npm pack --dry-run` inventory and byte comparisons, and package exports/bundles checks. It prints the separate `scripts/install-profile.sh <release tag> [profile]` command; publishing never stops DSH, installs or accesses a DSH profile. Keep the install and live-check steps in the integration runbook.
 
 Past upstream contributions: [room-race regression PR #1396](https://github.com/Fei2411/DS-Bot/pull/1396) and the Discussions [#1397](https://github.com/Fei2411/DS-Bot/discussions/1397), [#1398](https://github.com/Fei2411/DS-Bot/discussions/1398) and [#1399](https://github.com/Fei2411/DS-Bot/discussions/1399). Upstream accepts pull requests only from collaborators and has not answered these, so the fork no longer contributes upstream; its features and fixes are maintained here.
 
