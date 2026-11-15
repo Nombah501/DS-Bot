@@ -17,7 +17,7 @@ import { chatRecords } from './chat-record.js'
 import { inbound } from './inbound.js'
 import { localeOf, translate } from './locale.js'
 import { forumBinder } from './forum-bind.js'
-import { showStatus, statusData } from './status-panel.js'
+import { stops } from './stop.js'
 
 const RECONCILE_MS = 15_000
 
@@ -25,7 +25,6 @@ const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase
 
 export function install(rt) {
   const { ctx, state } = rt
-  const statusSteps = new Map()
   const store = runtimeStore(rt)
   // Telegram notices follow one Paired person: their /lang choice, else their
   // Telegram language. Other platforms, and unknown people, use DS Bot's language.
@@ -87,7 +86,7 @@ export function install(rt) {
     handleOf: id => runners.get(id)?.handle,
     deliveryOf: id => runners.get(id)?.delivery,
     paired: (conn, personId) => paired(conn, personId),
-    sourceOpen: conn => sourceOpen(conn),
+    sourceOpen: conn => stopping.sourceOpen(conn),
     warn: (template, ...args) => rt.warn(template, ...args),
     readOnly: () => rt.readOnly() !== undefined,
   })
@@ -132,34 +131,6 @@ export function install(rt) {
     return undefined
   }
 
-  // Shared Stop path for /stop, Drafts and the Status panel.
-  const stopTarget = async (conn, chat, target, text, action) => {
-    runners.get(conn.id)?.drafts?.endTarget(target)
-    const stopped = target.botId !== undefined ? await rt.stopChat(target.botId) : await rt.stopRoomWork(target.roomId)
-    await sendCardReply(conn, chat, text(stopped ? 'stopped' : 'idle'), action)
-    return stopped
-  }
-  const onStop = (conn) => async ({ chat, draftId }) => {
-    const runner = runners.get(conn.id)
-    if (imPlatform(conn.platform)?.drafts !== true || chat.kind !== 'direct' || !Number.isSafeInteger(draftId) || draftId === 0) return
-    const copy = runner?.drafts?.find(chat, draftId)
-    if (copy === undefined) return
-    const current = conn.chats?.[chat.key]
-    const target = current === undefined ? undefined : place.targetOf(conn, chat)
-    if (!place.may(conn, current?.personId, target)) return
-    if (target === undefined || target.botId !== copy.target.botId || target.roomId !== copy.target.roomId) return
-    await stopTarget(conn, copy.chat, target, textForChat(conn, chat.key))
-  }
-  const onWidgetQuery = conn => async action => {
-    if (imPlatform(conn.platform)?.statusPanel !== true || action.chat.kind !== 'direct'
-      || action.type !== 'data' || action.data !== 'stop' || !paired(conn, action.sender.id)) return
-    const record = runners.get(conn.id)?.panels?.find(action.chat.key, action.messageId)
-    if (record === undefined || !place.may(conn, action.sender.id, record.target)) return
-    // A widget press may not carry the sender's language; the chat's last one stands in.
-    const sender = { id: action.sender.id, languageCode: action.sender.languageCode ?? conn.chats?.[action.chat.key]?.languageCode }
-    await stopTarget(conn, record.chat, record.target, textForPerson(conn, sender))
-  }
-
   const sendCardReply = async (conn, chat, body, action) => {
     // Message replies have no action; even on callback-capable platforms this is optional.
     if (imPlatform(conn.platform)?.callbackAnswer === true && typeof action?.answer === 'function') return action.answer(body)
@@ -171,67 +142,36 @@ export function install(rt) {
     running: id => runners.has(id),
     sendText, textForPerson,
   })
+  const stopping = stops(rt, {
+    cards, place, runnerOf: id => runners.get(id),
+    sendText, textForPerson, textForChat, sourceOpen: kinds.sourceOpen,
+  })
 
   const forumBind = forumBinder(rt, { connections, topics: topicLifecycle, handleOf: id => runners.get(id)?.handle, deliveryOf: id => runners.get(id)?.delivery, sendText, sendCardReply, textForPerson, may: place.may })
 
-  // Keep snapshot wiring here so ticket 42 remains a one-commit revert.
   const incoming = inbound(
     rt,
     {
       records, place, kinds, forumBind, connections,
       deliveryOf: id => runners.get(id)?.delivery,
-      showStatus: async (conn, msg, target, text) => {
-        const runner = runners.get(conn.id)
-        await showStatus(rt, {
-          chat: msg.chat, target, text, steps: statusSteps,
-          richCards: imPlatform(conn.platform)?.richCards === true,
-          sendCard: runner?.handle !== undefined && imPlatform(conn.platform)?.richCards === true ? (...args) => cards.send(conn, ...args) : undefined,
-          sendText: body => runner?.delivery.output({ chat: msg.chat, target }, { text: body, rich: true }),
-        })
-      },
-      textForPerson, targetName, stopTarget, envFor,
+      showStatus: stopping.show,
+      textForPerson, targetName, stopTarget: stopping.target, envFor,
     },
   )
 
   const onAction = (conn) => async (action) => {
     if (!paired(conn, action.sender.id)) {
-      if (imPlatform(conn.platform)?.statusPanel === true && String(action.data ?? '').startsWith('t:')) {
-        await sendCardReply(conn, action.chat, textForPerson(conn, action.sender)('denied'), action)
-      }
+      if (stopping.handles(conn, action)) await stopping.unpaired(conn, action)
       return
     }
-    const text = textForPerson(conn, action.sender)
     await records.heard(conn.id, action.chat.key, action.sender)
     const data = String(action.data ?? '')
-    const { chat } = action
     if (imPlatform(conn.platform)?.topics === true && data.startsWith('b:')) {
       await forumBind.action(conn, action)
       return
     }
-    // Button data is `<kind>:<id>:<choice>`; the id is everything between the
-    // first and the last colon, so an id with a colon in it still parses.
-    const cut = data.lastIndexOf(':')
-    const cardKey = data.slice(0, cut)
-    const choice = data.slice(cut + 1)
-    if (imPlatform(conn.platform)?.statusPanel === true && data.startsWith('t:')) {
-      const entry = cards.byMessage(conn, chat, cardKey, action.messageId)
-      if ((chat.kind !== 'group' && chat.kind !== 'direct') || choice !== 'stop' || entry === undefined) {
-        await sendCardReply(conn, chat, text('idle'), action)
-        return
-      }
-      if (!place.may(conn, action.sender.id, entry.target) || !place.deliverable(conn, chat, { target: entry.target })) {
-        await sendCardReply(conn, chat, text('denied'), action)
-        return
-      }
-      if (entry.answer !== undefined || !statusData(rt, entry.target, text, statusSteps).active) {
-        await cards.settle(conn, cardKey, text => text('idle'), [])
-        await sendCardReply(conn, chat, text('idle'), action)
-        return
-      }
-      // Claim this snapshot before cancellation yields, so a second press cannot stop twice.
-      await cards.claim(conn, cardKey, text => text('stopped'), [])
-      await stopTarget(conn, chat, entry.target, text, action)
-      await cards.edits(conn)
+    if (stopping.handles(conn, action)) {
+      await stopping.press(conn, action)
       return
     }
     await kinds.press(conn, action)
@@ -242,18 +182,9 @@ export function install(rt) {
     for (const conn of Object.values(connections())) await kinds.sync(conn)
   }
 
-  // Whether the thing a Card asks about still waits for an answer.
-  const sourceOpen = (conn) => {
-    const open = kinds.sourceOpen()
-    return (cardKey, entries) => cardKey.startsWith('t:') && imPlatform(conn.platform)?.statusPanel === true
-      ? entries.some(entry => place.deliverable(conn, { key: entry.chatKey, kind: conn.chats?.[entry.chatKey]?.kind, threadId: entry.threadId }, { target: entry.target })
-        && statusData(rt, entry.target, textForChat(conn, entry.chatKey), statusSteps).active)
-      : open(cardKey)
-  }
-
   // ---------------------------------------------------------------- lifecycle
   const runners = connectionRunners(rt, {
-    connections, platformOf: imPlatform, place, steps: statusSteps, textForChat,
+    connections, platformOf: imPlatform, place, steps: stopping.steps, textForChat,
     wants: conn => adapters[conn.platform] !== undefined && conn.enabled !== false
       && rt.readOnly() === undefined && hasSecrets(conn),
     connect: async (conn, handlers) => {
@@ -273,8 +204,8 @@ export function install(rt) {
     },
     message: (conn, msg) => incoming.message(conn, msg),
     action: (conn, action) => onAction(conn)(action),
-    stop: (conn, event) => onStop(conn)(event),
-    widgetQuery: (conn, action) => onWidgetQuery(conn)(action),
+    stop: stopping.draft,
+    widgetQuery: stopping.widgetQuery,
   })
   const sync = runners.sync
 
@@ -552,8 +483,7 @@ export function install(rt) {
     }
   })
   ctx.on('session/event', (session, event) => {
-    if (event.type === 'step/start' && Number.isSafeInteger(event.data?.step)) statusSteps.set(session.id, event.data.step)
-    if (event.type === 'turn/start' || event.type === 'turn/end') statusSteps.delete(session.id)
+    stopping.sessionEvent(session, event)
     place.sessionEvent(session, event)
     if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
       for (const { runner } of runners.running()) runner.drafts?.endStep(session.id, event.data?.turn, event.data?.step)

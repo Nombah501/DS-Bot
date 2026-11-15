@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { addressKey, sameTarget } from './topics.js'
 import { classify, recoverMissingTopic } from './errors.js'
 
@@ -21,18 +20,6 @@ export function statusData(rt, target, text, steps) {
     step: Math.max(0, ...sessions.map(id => steps?.get(id) ?? 0)),
     since: since.length > 0 ? Math.min(...since) : null,
     active: live.length > 0 || waiting,
-  }
-}
-
-export async function showStatus(rt, { chat, target, text, steps, richCards, sendCard, sendText }) {
-  const data = statusData(rt, target, text, steps)
-  const body = `${data.name} — ${data.state}\n${text('statusTool')}: ${data.tool || '—'}\n${text('statusStep')}: ${data.step}\n${text('statusElapsed')}: ${data.since === null ? 0 : Math.max(0, Math.floor((Date.now() - data.since) / 1000))} s`
-  if (data.active && richCards && sendCard !== undefined) {
-    const key = `t:${randomUUID()}`
-    await sendCard(key, [{ chat, target }], body, undefined,
-      () => ({ text: body, options: [{ data: `${key}:stop`, label: text('stop') }] }))
-  } else {
-    sendText(body)
   }
 }
 

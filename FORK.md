@@ -16,6 +16,7 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Status:** `/status` answers with a rich snapshot and an authorized Stop control while work is active, in private chats and groups alike. The pinned private Status panel widget is kept in the code but not created while Telegram has widgets closed.
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
+- **Internals:** the Stop module owns command, Draft, widget and snapshot Stops, Status snapshots and their step counter, with injected-dependency tests.
 
 ### In 0.3.6-tb.7
 
@@ -163,6 +164,7 @@ A	ds-bot/src/host/im/rich-format.js
 A	ds-bot/src/host/im/runners.js
 A	ds-bot/src/host/im/runtime-store.js
 A	ds-bot/src/host/im/status-panel.js
+A	ds-bot/src/host/im/stop.js
 A	ds-bot/src/host/im/topics.js
 M	ds-bot/src/shared/im-platforms.js
 M	ds-bot/test/browser-script-runner.test.js
@@ -184,6 +186,7 @@ M	ds-bot/test/im-qq.test.js
 A	ds-bot/test/im-runners.test.js
 A	ds-bot/test/im-runtime-store.test.js
 M	ds-bot/test/im-slack.test.js
+A	ds-bot/test/im-stop.test.js
 M	ds-bot/test/im-telegram.test.js
 M	ds-bot/test/im-wecom.test.js
 M	ds-bot/test/im-weixin.test.js

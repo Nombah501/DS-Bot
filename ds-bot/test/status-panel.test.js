@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { showStatus, statusPanels } from '../src/host/im/status-panel.js'
+import { statusPanels } from '../src/host/im/status-panel.js'
+import { showStatus } from '../src/host/im/stop.js'
 import { translate } from '../src/host/im/locale.js'
 
 const setup = () => {

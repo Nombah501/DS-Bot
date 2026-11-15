@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { inbound } from '../src/host/im/inbound.js'
 import { chatRecords } from '../src/host/im/chat-record.js'
-import { showStatus } from '../src/host/im/status-panel.js'
+import { showStatus } from '../src/host/im/stop.js'
 import { allows } from '../src/host/im/topics.js'
 
 const sender = { id: 'ann', name: 'Ann', languageCode: 'en' }
