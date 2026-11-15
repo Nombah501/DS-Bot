@@ -4,15 +4,13 @@
 // goes; cards.js keeps the Card journal; card-kinds.js owns DSH-sourced Cards;
 // delivery.js owns queued sends. This module owns pairing and event routing.
 import { randomBytes } from 'node:crypto'
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { replaceFile } from '../files.js'
 import { viewCardText } from '../parts.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { adapters } from './platforms/index.js'
 import { cleanAccess, migrateTopics, topics } from './topics.js'
 import { placement } from './placement.js'
 import { connectionRunners } from './runners.js'
+import { runtimeStore } from './runtime-store.js'
 import { cardJournal } from './cards.js'
 import { cardKinds } from './card-kinds.js'
 import { chatRecords } from './chat-record.js'
@@ -22,14 +20,13 @@ import { forumBinder } from './forum-bind.js'
 import { showStatus, statusData } from './status-panel.js'
 
 const RECONCILE_MS = 15_000
-const RUNTIME_SAVE_MS = 400
 
 const secretField = key => key.replace(/[A-Z]/g, char => `_${char}`).toUpperCase()
 
 export function install(rt) {
   const { ctx, state } = rt
   const statusSteps = new Map()
-  const imDir = join(rt.home, 'im')
+  const store = runtimeStore(rt)
   // Telegram notices follow one Paired person: their /lang choice, else their
   // Telegram language. Other platforms, and unknown people, use DS Bot's language.
   const translator = (conn, who) => (key, values) => {
@@ -45,75 +42,6 @@ export function install(rt) {
     const saved = conn.chats?.[chatKey]
     return { personId: saved?.personId ?? saved?.lastSenderId, languageCode: saved?.languageCode }
   })
-
-  // ---------------------------------------------------------------- runtime file
-  const runtimes = new Map() // id → { data: {runtime, cards, open}, timer, writing }
-  const runtimeLoads = new Map()
-  const runtimeOf = (id) => {
-    const held = runtimes.get(id)
-    if (held !== undefined) return Promise.resolve(held)
-    if (runtimeLoads.has(id)) return runtimeLoads.get(id)
-    const loading = (async () => {
-      let data
-      try {
-        data = JSON.parse(await readFile(join(imDir, `${id}.json`), 'utf8'))
-      } catch { data = undefined }
-      const loaded = {
-        data: {
-          runtime: data?.runtime !== null && typeof data?.runtime === 'object' ? data.runtime : {},
-          cards: data?.cards !== null && typeof data?.cards === 'object' ? data.cards : {},
-          requests: data?.requests ?? {},
-          turns: data?.turns ?? {},
-          panels: Array.isArray(data?.panels) ? data.panels : [],
-        },
-        timer: undefined,
-        writing: Promise.resolve(),
-      }
-      runtimes.set(id, loaded)
-      return loaded
-    })().finally(() => runtimeLoads.delete(id))
-    runtimeLoads.set(id, loading)
-    return loading
-  }
-  const scheduleWrite = (id) => {
-    const held = runtimes.get(id)
-    if (held === undefined || held.timer !== undefined) return
-    held.timer = setTimeout(() => {
-      held.timer = undefined
-      void writeRuntime(id).catch(error => rt.warn('ds-bot: im runtime %s not saved: %s', id, error))
-    }, RUNTIME_SAVE_MS)
-    held.timer.unref?.()
-  }
-  const writeRuntime = async (id) => {
-    const held = runtimes.get(id)
-    if (held === undefined) return
-    const run = held.writing.then(async () => {
-      if (rt.readOnly() !== undefined) return
-      await mkdir(imDir, { recursive: true })
-      const temp = join(imDir, `${id}.${process.pid}.tmp`)
-      try {
-        await writeFile(temp, JSON.stringify(held.data), { encoding: 'utf8', mode: 0o600 })
-        await chmod(temp, 0o600)
-        await replaceFile(temp, join(imDir, `${id}.json`))
-      } catch (error) {
-        await rm(temp, { force: true }).catch(() => {})
-        throw error
-      }
-    })
-    held.writing = run.catch(() => {})
-    return run
-  }
-  const runtimeEnv = async (id) => {
-    const held = await runtimeOf(id)
-    return {
-      get: () => held.data.runtime,
-      set: (patch) => {
-        Object.assign(held.data.runtime, patch)
-        scheduleWrite(id)
-      },
-    }
-  }
-  const cardsOf = async (id) => (await runtimeOf(id)).data
 
   // ------------------------------------------------------------- connections
   let topicsMigrated = false
@@ -134,7 +62,7 @@ export function install(rt) {
     fetch: globalThis.fetch,
     WebSocket: globalThis.WebSocket,
     config: rt.config.im?.[conn.platform],
-    runtime: runtime ?? await runtimeEnv(conn.id),
+    runtime: runtime ?? await store.runtime(conn.id),
     log: { warn: (template, ...args) => rt.warn(template, ...args) },
     uploadFile: async (sessionId, file) => {
       const uploads = ctx.get?.('fileUploads')
@@ -147,17 +75,12 @@ export function install(rt) {
 
   const place = placement({
     connections,
-    store: {
-      * loaded() { for (const [id, held] of runtimes) yield [id, held.data] },
-      of: cardsOf,
-      save: scheduleWrite,
-      saveNow: writeRuntime,
-    },
+    store,
     botOf: id => rt.botOf(id),
     roomOf: id => rt.roomOf(id),
   })
   const cards = cardJournal({
-    store: { of: cardsOf, peek: id => runtimes.get(id)?.data, save: scheduleWrite },
+    store,
     connections,
     textForChat,
     textForPerson,
@@ -177,14 +100,14 @@ export function install(rt) {
       (connId, chatKey, oldThreadId, threadId) => runners.get(connId)?.drafts?.moved(chatKey, oldThreadId, threadId),
       (connId, chatKey, oldThreadId, threadId) => cards.moved(connId, chatKey, oldThreadId, threadId),
       async (connId, chatKey, oldThreadId, threadId) => {
-        const data = await cardsOf(connId)
+        const data = await store.of(connId)
         for (const panel of data.panels) {
           if (panel.chat.key === chatKey && panel.chat.threadId === oldThreadId) {
             panel.chat.threadId = threadId
             delete panel.messageId
           }
         }
-        scheduleWrite(connId)
+        store.save(connId)
       },
     ],
   })
@@ -338,8 +261,7 @@ export function install(rt) {
       const env = await envFor(conn)
       return adapter.connect(fieldsOf(conn), env, handlers)
     },
-    panelRecords: async id => (await runtimeOf(id)).data.panels,
-    savePanels: scheduleWrite,
+    store,
     ensurePrivateTopics, recoverTopic,
     expirePrivate: conn => cards.expirePrivate(conn),
     syncCards,
@@ -475,8 +397,7 @@ export function install(rt) {
         await rt.secretEndpoint('secret-delete', { name }).catch(() => {})
       }
       delete connections()[id]
-      runtimes.delete(id)
-      await rm(join(imDir, `${id}.json`), { force: true }).catch(() => {})
+      await store.remove(id)
       await rt.save()
       return true
     },
@@ -683,12 +604,7 @@ export function install(rt) {
     void rt.load().then(() => sync()).catch(() => {})
     return () => {
       clearInterval(interval)
-      return runners.teardown().then(async () => {
-        await Promise.all(runtimeLoads.values())
-        await cards.flushClaims()
-        for (const held of runtimes.values()) if (held.timer !== undefined) clearTimeout(held.timer)
-        await Promise.allSettled([...runtimes.keys()].map(writeRuntime))
-      })
+      return runners.teardown().then(() => store.flush(() => cards.flushClaims()))
     }
   }, 'ds-bot: im')
 

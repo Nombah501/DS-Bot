@@ -5,7 +5,7 @@ import { statusPanels } from './status-panel.js'
 
 const TYPING_MS = 4_000
 
-export function connectionRunners(rt, { connections, platformOf, wants, connect, place, steps, textForChat, panelRecords, savePanels, ensurePrivateTopics, recoverTopic, expirePrivate, syncCards, migrate, message, action, stop: onStop, widgetQuery }) {
+export function connectionRunners(rt, { connections, platformOf, wants, connect, place, steps, textForChat, store, ensurePrivateTopics, recoverTopic, expirePrivate, syncCards, migrate, message, action, stop: onStop, widgetQuery }) {
   const runners = new Map()
   const statuses = new Map()
   let stopped = false
@@ -108,14 +108,14 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
       }
       if (platform?.statusPanel === true) {
         runner.panels = statusPanels(handle, {
-          rt, steps, records: await panelRecords(conn.id),
+          rt, steps, records: (await store.of(conn.id)).panels,
           // The live panel paths (refresh, find) are gated by `deliverable`; the start record only keeps the language defined.
           textForChat: chat => textForChat(runner.connection() ?? conn, chat.key),
           deliverable: (chat, target) => {
             const current = runner.connection()
             return current !== undefined && place.deliverable(current, chat, { target })
           },
-          save: () => { if (runner.connection() !== undefined) savePanels(conn.id) },
+          save: () => { if (runner.connection() !== undefined) store.save(conn.id) },
           recover,
           warn: error => rt.warn('ds-bot: Status panel update failed: %s', rt.redactSecrets(String(error?.message ?? error))),
         })

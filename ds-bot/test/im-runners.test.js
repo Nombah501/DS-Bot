@@ -47,7 +47,7 @@ const bench = (t, { capabilities = {}, connecting, records = [] } = {}) => {
       return handle
     },
     place, steps: new Map(), textForChat: current => key => `${current.language ?? 'en'}:${key}`,
-    panelRecords: async () => records, savePanels: () => calls.push('panels-save'),
+    store: { of: async () => ({ panels: records }), save: () => calls.push('panels-save') },
     ensurePrivateTopics: async current => calls.push(['topics', current]),
     recoverTopic: async () => false,
     expirePrivate: async current => calls.push(['private', current]),

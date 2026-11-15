@@ -325,6 +325,90 @@ test('runtime writes serialize scheduled saves, inbound messages and shutdown', 
   }
 })
 
+test('im-remove waits for an in-flight runtime write and never recreates the file', async t => {
+  const seed = TEAM()
+  const conn = { id: 'im_remove_write', platform: 'telegram', botId: 'a', settings: {}, secrets: {}, enabled: true, paired: [], requests: [], chats: {}, createdAt: 1 }
+  seed.im = { connections: { [conn.id]: conn } }
+  const s = await start({ seed })
+  const gate = Promise.withResolvers()
+  const writing = Promise.withResolvers()
+  t.after(async () => {
+    gate.resolve()
+    try { await s.stop() } finally {
+      t.mock.restoreAll()
+      syncBuiltinESMExports()
+    }
+  })
+  for (let attempt = 0; s.fake.env === undefined && attempt < 300; attempt++) await s.flush()
+  assert.ok(s.fake.env, 'the adapter connected')
+  const path = join(s.home, 'im', `${conn.id}.json`)
+  const temp = join(s.home, 'im', `${conn.id}.${process.pid}.tmp`)
+  const landed = Promise.withResolvers()
+  const syncIO = (name, target, run) => {
+    const original = fsp[name]
+    t.mock.method(fsp, name, async (...args) => args[0] === target ? run(...args) : original(...args))
+  }
+  syncIO('mkdir', join(s.home, 'im'), mkdirSync)
+  syncIO('chmod', temp, chmodSync)
+  syncIO('rm', path, rmSync)
+  syncIO('rename', temp, (...args) => { renameSync(...args); landed.resolve() })
+  const writeFile = fsp.writeFile
+  t.mock.method(fsp, 'writeFile', async (file, ...args) => {
+    if (file === temp) {
+      writing.resolve()
+      await gate.promise
+      return writeFileSync(file, ...args)
+    }
+    return writeFile(file, ...args)
+  })
+  syncBuiltinESMExports()
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  s.fake.env.runtime.set({ cursor: 'removed' })
+  t.mock.timers.tick(400)
+  t.mock.timers.reset()
+  await writing.promise
+  const removing = s.rt.imEndpoint('im-remove', { id: conn.id })
+  // Runtime IO is in microtasks; drain the endpoint up to its blocked write.
+  await new Promise(setImmediate)
+  gate.resolve()
+  await Promise.all([removing, landed.promise])
+  await s.ctx.dispose()
+  assert.equal(existsSync(path), false, 'an in-flight write must not recreate a removed connection runtime file')
+})
+
+test('im-remove waits for the first runtime load and shutdown cannot restore its holder', async t => {
+  const seed = TEAM()
+  seed.im = { connections: { im_removed: {
+    id: 'im_removed', platform: 'telegram', botId: 'a', settings: {}, secrets: {}, enabled: true,
+    paired: [], requests: [], chats: {}, createdAt: 1,
+  } } }
+  const gate = Promise.withResolvers()
+  const reading = Promise.withResolvers()
+  const readFile = fsp.readFile
+  t.mock.method(fsp, 'readFile', async (file, ...args) => {
+    if (!String(file).endsWith('/im/im_removed.json')) return readFile(file, ...args)
+    reading.resolve()
+    await gate.promise
+    return JSON.stringify({ runtime: { cursor: 'removed' } })
+  })
+  syncBuiltinESMExports()
+  const s = await start({ seed })
+  t.after(async () => {
+    gate.resolve()
+    try { await s.stop() } finally {
+      t.mock.restoreAll()
+      syncBuiltinESMExports()
+    }
+  })
+  await reading.promise
+  const removing = s.rt.imEndpoint('im-remove', { id: 'im_removed' })
+  await new Promise(setImmediate)
+  gate.resolve()
+  await removing
+  await s.ctx.dispose()
+  assert.equal(existsSync(join(s.home, 'im', 'im_removed.json')), false, 'a late first load must not restore a removed runtime holder on shutdown')
+})
+
 test('typing receives the chat key on every platform', async (t) => {
   for (const platform of Object.keys(adapters)) {
     await t.test(platform, async (t) => {
