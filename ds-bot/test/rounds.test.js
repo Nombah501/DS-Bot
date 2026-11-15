@@ -1075,9 +1075,9 @@ test('a group stops answering its own status posts once the idle steps reach the
 
   // A paused room answers no status post of its own, and says nothing more about it.
   const { round: seventh } = await posted('暂无待办', 'relay-7')
-  await settle()
+  const result = JSON.parse(await seventh)
   assert.equal(sent.filter(entry => entry.message.source.role === 'room').length, 0, 'no turn starts on its own')
-  assert.equal(JSON.parse(await seventh).replies.filter(reply => reply.kind === 'paused').length <= 1, true)
+  assert.equal(result.replies.filter(reply => reply.kind === 'paused').length <= 1, true)
   assert.equal(state().log.filter(line => line.kind === 'notice').length, 1, 'no second notice')
 
   // The user's message opens the round and lifts the pause.
@@ -1192,13 +1192,12 @@ test('a paused group parks every member an @all called, in a new round', async (
   const post = sent.find(entry => entry.sessionId === room.id && entry.message.source.role === 'post')
   await emit(room.id, { type: 'user/message', data: { source: post.message.source, content: post.message.content } })
   const held = relay(room.id, 'relay-1')
-  await settle()
+  await held
   assert.equal(sent.filter(entry => entry.message.source.role === 'room').length, 0, 'a paused room opens no round')
   assert.deepEqual((state().paused ?? []).map(entry => [entry.name, entry.note, entry.idle]), [
     ['Writer', 'Chief called everyone', true],
     ['Tester', 'Chief called everyone', true],
   ], 'every member @all called waits for the user')
-  await held
 
   // The user's message brings them back.
   sent.length = 0
@@ -1395,7 +1394,7 @@ test('the idle pause survives a restart and the user lifts it', async (t) => {
   const post = sent.find(entry => entry.sessionId === room.id && entry.message.source.role === 'post')
   await emit(room.id, { type: 'user/message', data: { source: post.message.source, content: post.message.content } })
   const quiet = relay(room.id, 'relay-1')
-  await settle()
+  await quiet
   assert.equal(sent.filter(entry => entry.message.source.role === 'room').length, 0, 'no round starts on its own after a restart')
 
   await emit(room.id, { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '@Writer 继续' }] } })
@@ -1404,7 +1403,6 @@ test('the idle pause survives a restart and the user lifts it', async (t) => {
   assert.ok(turn, "the user's message opens a round again")
   await answer(turn.sessionId, turn.message.source.exchangeId, '继续核对', 1)
   await resumed
-  await quiet
   assert.equal(state().idlePaused, undefined)
 })
 
