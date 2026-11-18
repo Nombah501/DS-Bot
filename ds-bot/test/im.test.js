@@ -1561,7 +1561,7 @@ test('an approval card whose send exhausts retries is retained and re-delivered 
   assert.equal((await racing)[0], 'allowed-once')
 })
 
-async function startSwitchHarness(t, { tokens = new Map([['a', 1_000]]), cwd = () => undefined } = {}) {
+async function startSwitchHarness(t, { tokens = new Map([['a', 1_000]]), cwd = () => undefined, platform = 'feishu' } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsb-im-switch-'))
   const work = join(home, 'work')
   mkdirSync(work, { recursive: true })
@@ -1571,8 +1571,8 @@ async function startSwitchHarness(t, { tokens = new Map([['a', 1_000]]), cwd = (
   let idleGate
   let createGate
   const fake = fakeAdapter()
-  const real = adapters.feishu
-  adapters.feishu = fake
+  const real = adapters[platform]
+  adapters[platform] = fake
   const ctx = fakeContext({
     services: {
       tokenMeter: {
@@ -1656,7 +1656,7 @@ async function startSwitchHarness(t, { tokens = new Map([['a', 1_000]]), cwd = (
   })
   const rt = createRuntime(ctx, { home })
   t.after(async () => {
-    adapters.feishu = real
+    adapters[platform] = real
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   })
@@ -1686,7 +1686,7 @@ async function startSwitchHarness(t, { tokens = new Map([['a', 1_000]]), cwd = (
   })
   const fireApprovals = (request, next) => Promise.all((ctx.listeners.get('approval/request') ?? []).map(listener => listener(request, next)))
 
-  const conn = await rt.imEndpoint('im-add', { platform: 'feishu', botId: 'a', fields: FIELDS.feishu })
+  const conn = await rt.imEndpoint('im-add', { platform, botId: 'a', fields: FIELDS[platform] })
   rt.state.im.connections[conn.id].paired.push({ id: 'u1', name: 'U1', at: 1 })
   await rt.save()
 
@@ -1706,6 +1706,44 @@ async function startSwitchHarness(t, { tokens = new Map([['a', 1_000]]), cwd = (
     setCreateGate: (gate) => { createGate = gate },
   }
 }
+
+test('Telegram private Topic Origin survives a real mid-turn part switch', async t => {
+  const { rt, fake, prompts, tokens, agentOf, emitEvent, preStep, waitHandoff, conn } = await startSwitchHarness(t, { platform: 'telegram' })
+  const connection = rt.state.im.connections[conn.id]
+  connection.account.hasTopicsEnabled = true
+  connection.paired[0].access = { botIds: ['a'], roomIds: [] }
+  connection.paired.push({ id: 'u2', name: 'U2', access: { botIds: ['a'], roomIds: [] } })
+  connection.chats = {
+    'dm-u1': { kind: 'direct', personId: 'u1', topics: { 101: { target: { botId: 'a' } } } },
+    'dm-u2': { kind: 'direct', personId: 'u2', topics: { 201: { target: { botId: 'a' } } } },
+  }
+  await rt.save()
+  await fake.handlers.onMessage({
+    chat: { key: 'dm-u1', kind: 'direct', title: 'U1', threadId: 101 },
+    sender: { id: 'u1', name: 'U1' }, text: 'continue in this Topic',
+  })
+  const message = { source: { kind: 'user', rpcId: prompts.at(-1).requestId }, content: [{ type: 'text', text: 'continue in this Topic' }] }
+  emitEvent('a', 'turn/start', { turn: 1 })
+  assert.equal((await preStep('a', [message], 1)).kind, 'enter')
+  emitEvent('a', 'user/message', message)
+  emitEvent('a', 'assistant/message', { turn: 1, message: { content: [{ type: 'tool-call', id: 'topic-tool', name: 'bash', arguments: '{}' }] } })
+
+  tokens.set('a', 195_000)
+  assert.equal((await preStep('a', [], 2)).kind, 'reject')
+  emitEvent('a', 'turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'hook', reason: 'pre-step' } } })
+  const nextPart = await waitHandoff(() => rt.botOf('a').sessionId === 'a' ? undefined : rt.botOf('a').sessionId)
+  assert.equal(nextPart, 's1', 'parts.js created a new Session')
+  const handoff = agentOf(nextPart).inbox.nextTurn.shift()
+  assert.ok(handoff)
+  emitEvent(nextPart, 'turn/start', { turn: 1 })
+  assert.equal((await preStep(nextPart, [handoff], 1)).kind, 'enter')
+  emitEvent(nextPart, 'user/message', handoff)
+  fake.sent.length = 0
+  emitEvent(nextPart, 'assistant/message', { turn: 1, message: { content: [{ type: 'text', text: 'after the real Topic switch' }] } })
+  for (let attempt = 0; !fake.sent.some(job => job.text === 'after the real Topic switch') && attempt < 300; attempt++) await delay(10)
+  assert.deepEqual(fake.sent.filter(job => job.text === 'after the real Topic switch').map(job => [job.chat.key, job.chat.threadId]),
+    [['dm-u1', 101]], 'the resumed Step stays in its exact Topic, not the other accessible private Topic')
+})
 
 test('reply origin: a mid-turn part switch keeps delivering the resumed turn back to its IM chat', async (t) => {
   const s = await startSwitchHarness(t)
