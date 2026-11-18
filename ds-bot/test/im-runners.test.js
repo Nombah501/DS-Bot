@@ -58,7 +58,7 @@ const bench = (t, { capabilities = {}, connecting, records = [] } = {}) => {
     widgetQuery: async (current, event) => events.push(['widgetQuery', current, event]),
   })
   t.after(() => runners.teardown())
-  return { runners, conn, connections, calls, events, callbacks, handles, rt }
+  return { runners, conn, connections, calls, events, callbacks, handles, rt, place }
 }
 
 test('Connection runners: concurrent syncs reserve one slot and Delivery drains after connect', async t => {
@@ -197,4 +197,75 @@ test('Connection runners: a failed connect cuts errors at 300 characters before 
   assert.deepEqual(b.runners.statusView(), { c1: { state: 'error', error: `[redacted]${'x'.repeat(295)}`, at: 1_000_000 } })
   await b.runners.stop('c1')
   assert.equal(b.runners.statusView().c1.state, 'error', 'stopping must preserve an error status')
+})
+
+test('Connection runners: stop preserves queued and Retained sends through a failed reconnect; retry replays and forget clears them', async t => {
+  let failConnect = false
+  const b = bench(t, { connecting: () => { if (failConnect) throw new Error('connect failed') } })
+  await b.runners.sync()
+  b.callbacks[0].onStatus({ state: 'ready' })
+  const old = b.runners.get('c1')
+  b.handles[0].send = async () => { throw Object.assign(new Error('TOKEN denied'), { permanent: true }) }
+  await old.delivery.notice(chat, { text: 'Retained' })
+  b.handles[0].send = async () => { throw new Error('network') }
+  const queued = old.delivery.notice(chat, { text: 'Queued' })
+  await settle()
+  await b.runners.stop('c1')
+  await queued
+  failConnect = true
+  await b.runners.retry('c1')
+  assert.equal(b.runners.get('c1'), undefined)
+  assert.match(b.runners.statusView().c1.error, /connect failed/)
+  failConnect = false
+  await b.runners.retry('c1')
+  await settle()
+  assert.deepEqual(b.calls.filter(call => Array.isArray(call) && call[0] === 'send'), [['send', 'Retained'], ['send', 'Queued']])
+  b.callbacks.at(-1).onStatus({ state: 'ready' })
+  assert.equal(b.runners.statusView().c1.state, 'ready')
+  b.handles.at(-1).send = async () => { throw Object.assign(new Error('retained again'), { permanent: true }) }
+  await b.runners.get('c1').delivery.notice(chat, { text: 'Forgotten' })
+  b.runners.forget('c1')
+  await b.runners.stop('c1')
+  await b.runners.retry('c1')
+  await settle()
+  assert.equal(b.calls.some(call => Array.isArray(call) && call[0] === 'send' && call[1] === 'Forgotten'), false)
+  assert.notEqual(b.runners.statusView().c1.state, 'error')
+})
+
+test('Connection runners: per-chat send status preserves other chat failures and restores the adapter state', async t => {
+  const b = bench(t)
+  await b.runners.sync()
+  const runner = b.runners.get('c1')
+  b.callbacks[0].onStatus({ state: 'ready' })
+  b.handles[0].send = async address => {
+    if (address.key === 'bad') throw Object.assign(new Error('TOKEN bad chat'), { permanent: true })
+    return { messageId: 1 }
+  }
+  await runner.delivery.notice({ key: 'bad', kind: 'direct' }, { text: 'bad' })
+  assert.deepEqual(b.runners.statusView().c1, { state: 'error', error: '[redacted] bad chat', at: 1_000_000 })
+  await runner.delivery.notice(chat, { text: 'good' })
+  assert.equal(b.runners.statusView().c1.state, 'error', 'a different chat cannot clear the failure')
+  b.callbacks[0].onStatus({ state: 'error', error: 'adapter error' })
+  assert.equal(b.runners.statusView().c1.error, 'adapter error')
+  b.callbacks[0].onStatus({ state: 'polling' })
+  b.handles[0].send = async () => ({ messageId: 2 })
+  await b.runners.retry('c1')
+  await settle()
+  b.callbacks.at(-1).onStatus({ state: 'polling' })
+  assert.equal(b.runners.statusView().c1.state, 'polling')
+})
+
+test('Connection runners: retry interrupts a retry timer without reconnecting a ready adapter', async t => {
+  const b = bench(t)
+  await b.runners.sync()
+  b.callbacks[0].onStatus({ state: 'ready' })
+  b.handles[0].send = async () => { throw new Error('retry TOKEN') }
+  const sent = b.runners.get('c1').delivery.notice(chat, { text: 'waiting' })
+  await settle()
+  assert.equal(b.runners.statusView().c1.state, 'retrying')
+  b.handles[0].send = async () => ({ messageId: 1 })
+  await b.runners.retry('c1')
+  await sent
+  assert.equal(b.handles.length, 1)
+  assert.equal(b.runners.statusView().c1.state, 'ready')
 })

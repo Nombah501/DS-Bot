@@ -1,5 +1,6 @@
 // DSH-sourced Card kinds: their rendering, answers and source-side settlement.
 // The journal beneath this module stays kind-agnostic.
+import { randomUUID } from 'node:crypto'
 import { viewCardText } from '../parts.js'
 import { imPlatform } from '../../shared/im-platforms.js'
 
@@ -28,10 +29,13 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
     }
     const valid = labels.filter(label => (found.question.options ?? []).some(option => option.label === label))
     if (valid.length === 0) return false
+    const requestId = `im:${conn.platform}:${randomUUID()}`
+    await place.asked(conn, requestId, sender, chat)
     try {
-      await rt.answerQuestion(found.sessionId, found.question.id, { selected: valid })
+      await rt.answerQuestion(found.sessionId, found.question.id, { selected: valid }, requestId)
       await cards.settle(conn, held.cardKey, valid.join(', '))
     } catch (error) {
+      await place.unasked(conn, requestId)
       if (error?.code === 'bot/stale') {
         await cards.claim(conn, held.cardKey, text => text('answered'))
         await reply(conn, chat, text('stale'), action)
@@ -48,6 +52,7 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
     if (held === undefined) return false
     try {
       rt.answerApproval(held.cardKey.slice(2), choice)
+      place.claimChat(conn, chat, sender)
       await cards.settle(conn, held.cardKey, text => choice === 'allow' ? text('allow') : text('reject'))
     } catch (error) {
       if (error?.code === 'bot/stale') {
@@ -180,7 +185,6 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
     await cards.load(conn.id)
     for (const [sessionId, question] of Object.entries(state.questions ?? {})) {
       const cardKey = `q:${question.id}`
-      if (cards.sent(conn.id, cardKey)) continue
       const botId = rt.chatOwners.get(sessionId) ?? rt.pastOwners.get(sessionId)?.botId
       const bot = rt.botOf(botId)
       if (bot === undefined) continue
@@ -188,19 +192,19 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
       await cards.send(conn, cardKey, place.places(conn, { botId }, sessionId, 'card'), text => cardText.question(bot.name, question, text), buttons,
         text => ({ text: cardText.question(bot.name, question, text), options: question.multiSelect === true ? cardButtons.multiSelect(question, text) : cardButtons.question(question) }))
     }
+    for (const entry of rt.approvalsView()) await sendApproval(conn, entry)
     // Secret requests: text only — the key is typed on the computer or phone.
     for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
       const bot = rt.botOf(botId)
       if (bot === undefined) continue
       for (const request of list) {
         const cardKey = `s:${request.id}`
-        if (request.status !== 'pending' || cards.sent(conn.id, cardKey)) continue
-        await cards.send(conn, cardKey, place.places(conn, { botId }, request.sessionId, 'card'), text => text('secretAsk', { bot: bot.name, name: request.name }))
+        if (request.status !== 'pending') continue
+        await cards.send(conn, cardKey, place.places(conn, { botId }, request.sessionId ?? rt.chatOf(botId), 'card'), text => text('secretAsk', { bot: bot.name, name: request.name }))
       }
     }
     for (const [sessionId, view] of Object.entries(state.views ?? {})) {
       const cardKey = `v:${view.id}`
-      if (cards.sent(conn.id, cardKey)) continue
       const botId = rt.chatOwners.get(sessionId)
       const bot = rt.botOf(botId)
       if (bot === undefined) continue
@@ -217,21 +221,25 @@ export function cardKinds(rt, { cards, place, connections, handleOf, running, se
         : cardKey.startsWith('s:') ? secrets.has(cardKey)
           : cardKey.startsWith('v:') ? views.has(cardKey) : false
   }
+  const sendApproval = async (conn, data) => {
+    const bot = rt.botOf(data.botId)
+    const sessionId = data.sessionId ?? (data.roomId === undefined ? rt.chatOf(data.botId) : rt.roomOf(data.roomId)?.sessionId ?? data.roomId)
+    const targets = place.places(conn, data.roomId === undefined ? { botId: data.botId } : { roomId: data.roomId }, sessionId, 'card')
+    const buttons = platformOf(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
+    const initiator = await place.initiatorOf(conn, sessionId)
+    await cards.send(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
+      text => ({
+        text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),
+        details: data.detail,
+        options: cardButtons.approval(data.id, text).map((option, index) => ({ ...option, style: index === 0 ? 'success' : 'danger' })),
+      }), initiator)
+  }
   const approval = (kind, data) => {
     if (kind === 'open') {
       return (async () => {
         for (const conn of Object.values(connections())) {
           if (!running(conn.id)) continue
-          const bot = rt.botOf(data.botId)
-          const targets = place.places(conn, data.roomId === undefined ? { botId: data.botId } : { roomId: data.roomId }, data.sessionId, 'card')
-          const buttons = platformOf(conn.platform)?.buttons === true ? text => cardButtons.approval(data.id, text) : undefined
-          const initiator = await place.initiatorOf(conn, data.sessionId)
-          await cards.send(conn, `a:${data.id}`, targets, text => cardText.approval(bot?.name ?? '?', data, text), buttons,
-            text => ({
-              text: cardText.approval(bot?.name ?? '?', { ...data, detail: undefined }, text),
-              details: data.detail,
-              options: cardButtons.approval(data.id, text).map((option, index) => ({ ...option, style: index === 0 ? 'success' : 'danger' })),
-            }), initiator)
+          await sendApproval(conn, data)
         }
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
     }

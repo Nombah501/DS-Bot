@@ -17,6 +17,15 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 - **Language and feedback:** Russian Bridge/settings text, per-person `/lang ru`, `/lang en`, `/lang auto`, and localized callback toasts instead of noisy chat notices. Button acknowledgements remain responsive during asynchronous work.
 - **Fixes:** chat-scoped message identities, recipient/Topic/access checks on stale controls, restart-safe routing and settlement, draft/final ordering, typing delivery, a deterministic room-race regression fixture and browser-script execution isolation.
 
+### In 0.3.8-tb.1
+
+- **Upstream v0.3.8:** the plugin entry is now `plugin.js`, with upstream's Bot, group chat, connector, memory, desktop and mobile work since v0.3.6. On the other seven messaging platforms a reply, view, Card or group line now goes only to the chat whose turn asked, and turns from the computer, a timer or another Bot send nothing there, as upstream does. Telegram keeps its own rules: replies at the Origin, the Off-Telegram setting, and group lines in every Topic bound to the group.
+- **Telegram replies stay at their Origin longer:** a turn that switches to a new part (compaction, handoff, folder or engine switch) and a turn continued by answering a question Card keep answering in the Topic they started from; before, the rest of the turn went out as Off-Telegram. A second Paired person writing into a running turn does not change its Initiator.
+- **Failed sends are kept, not lost:** a message is tried at most four times (a Telegram flood wait is waited out in full and counts as one try), then it is kept and the chat's queue moves on. Kept and queued messages survive a reconnect and a disabled connection; "Try again" on the connection page sends them, dropping any whose Topic was unbound or whose Access was revoked meanwhile. A failure in one chat no longer marks the whole connection as broken, and an approval Card whose send was dropped is sent again. This replaces 0.3.6-tb.2's "queues are discarded on reconnect, disable or shutdown".
+- **Fixes from upstream ported to the fork's modules:** files sent into a group chat are attached to the group's current Session; Telegram forwards videos and reports files above the Bot API download limit; QQ falls back from markdown to plain text when the platform refuses it.
+- **Install refuses while any DSH runs:** `install-profile.sh` now also sees a DSH started by the command it prints, whatever the profile or start form (integration repository).
+- Internal: every way to Stop a Bot lives in one module (`stop.js`); the non-Telegram reply-origin rules live in `origin.js`.
+
 ### In 0.3.6-tb.7
 
 - **Cards sent while a connection is starting keep their form:** a question or approval Card sent while the Telegram connection was still connecting went out as plain text and, in a group, to everyone instead of only to its Initiator. It now goes out as the rich Card and the Initiator's Private card, like any other.
@@ -62,13 +71,13 @@ Telegram features use Bot API **10.1–10.4** and Telegram-only capabilities; th
 
 ## Install into a DSH profile
 
-Download the plugin tarball from [release v0.3.6-tb.7](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.6-tb.7), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
+Download the plugin tarball from [release v0.3.8-tb.1](https://github.com/Nombah501/DS-Bot/releases/tag/v0.3.8-tb.1), not a source-code archive. DSH Web requires Node.js 22.19 or newer and pnpm; this upstream base targets DSH `0.2.2-rc.1`.
 
 Run these yourself in a download directory (stop the running DSH instance before replacing its plugin):
 
 ```sh
-gh release download v0.3.6-tb.7 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.6-tb.7.tgz'
-npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.6-tb.7.tgz"
+gh release download v0.3.8-tb.1 --repo Nombah501/DS-Bot --pattern 'ds-bot-0.3.8-tb.1.tgz'
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add "file:$PWD/ds-bot-0.3.8-tb.1.tgz"
 npx @deepseek-ai/dsh@0.2.2-rc.1 web
 ```
 
@@ -76,7 +85,7 @@ Enable/configure the plugin in that profile and pair Telegram in its Bridge sett
 
 ## Upstream tracking and publishing
 
-Base: [upstream v0.3.6](https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.6), commit `a66cc737cfb6c3d8a2597e748cded6cab1206dd3`, recorded in [`.upstream-release`](.upstream-release). The fork's default branch is `telegram-bridge`; `main` remains an upstream copy for future contributions, never a target for our subtree publisher.
+Base: [upstream v0.3.8](https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.8), commit `5e9b7da8882da3b68d8a0624342708c2150a9156`, recorded in [`.upstream-release`](.upstream-release). The fork's default branch is `telegram-bridge`; `main` remains an upstream copy for future contributions, never a target for our subtree publisher.
 
 Development lives in the `ds-bot/` subtree of [DSH-Plugins](https://github.com/Nombah501/DSH-Plugins). Sync upstream into that subtree with full history, preserve Telegram-only capability gates and regenerate generated bundles rather than editing them. Follow the integration repository's `docs/runbooks/sync-upstream.md`. Install plugin/harness dependencies and the new `link/` dependencies before building. Fork versions are `<upstream version>-tb.<N>`: increment N for each publication, reset it for a new upstream base.
 
@@ -106,10 +115,10 @@ To regenerate the exact list after committing changes, run from DSH-Plugins and 
 
 ```sh
 split=$(git subtree split --quiet --prefix=ds-bot HEAD)
-git diff --name-status --no-renames a66cc737cfb6c3d8a2597e748cded6cab1206dd3 "$split"
+git diff --name-status --no-renames 5e9b7da8882da3b68d8a0624342708c2150a9156 "$split"
 ```
 
-In the published DS-Bot checkout the equivalent command is `git diff --name-status --no-renames a66cc737cfb6c3d8a2597e748cded6cab1206dd3 HEAD`. Do not compare upstream's root against the unsplit outer repository: upstream `ds-bot/` is outer `ds-bot/ds-bot/`. On an upstream sync, update both the base SHA and this inventory.
+In the published DS-Bot checkout the equivalent command is `git diff --name-status --no-renames 5e9b7da8882da3b68d8a0624342708c2150a9156 HEAD`. Do not compare upstream's root against the unsplit outer repository: upstream `ds-bot/` is outer `ds-bot/ds-bot/`. On an upstream sync, update both the base SHA and this inventory.
 
 <!-- upstream-changes:start -->
 ```text

@@ -4,7 +4,8 @@
 // msg_id with an incrementing msg_seq; outside the reply window the platform
 // refuses and the reason is permanent. No buttons — the core numbers choices.
 // Wire details ported from @tencent-connect/qqbot-nodejs (MIT, see NOTICE).
-import { chunkMarkdown } from '../format.js'
+import { chunkMarkdown, toPlain } from '../format.js'
+import { toQqMarkdown } from '../qq-markdown.js'
 import { retryDelay, retryWait } from './retry.js'
 import { platformError } from '../errors.js'
 
@@ -201,17 +202,29 @@ export default {
 
     return {
       send: async (chat, { text }) => {
-        const chunks = chunkMarkdown(String(text ?? ''), TEXT_LIMIT)
+        const chunks = chunkMarkdown(toQqMarkdown(String(text ?? '')), TEXT_LIMIT)
         const msgId = lastMsgId.get(chat.key)
         const base = chat.kind === 'direct' ? `/v2/users/${chat.key}/messages` : `/v2/groups/${chat.key}/messages`
         let messageId
         for (const chunk of chunks) {
           const seq = (msgSeq.get(msgId) ?? 0) + 1
           msgSeq.set(msgId, seq)
-          const sent = await api(env, token, base, {
-            method: 'POST',
-            body: { content: chunk, msg_type: 0, ...(msgId ? { msg_id: msgId, msg_seq: seq } : {}) },
-          })
+          const reply = msgId ? { msg_id: msgId, msg_seq: seq } : {}
+          let sent
+          try {
+            sent = await api(env, token, base, {
+              method: 'POST',
+              body: { markdown: { content: chunk }, msg_type: 2, ...reply },
+            })
+          } catch (error) {
+            // 40034090 is the platform refusing the markdown itself (no permission
+            // for it). Any other refusal is about this reply and is not retried.
+            if (Number(error?.bizCode) !== 40034090) throw error
+            sent = await api(env, token, base, {
+              method: 'POST',
+              body: { content: toPlain(chunk), msg_type: 0, ...reply },
+            })
+          }
           messageId = String(sent?.id ?? messageId ?? '')
         }
         return { messageId }
@@ -241,6 +254,7 @@ async function api(env, token, path, { method = 'GET', body } = {}) {
     // than auth problems too. 5xx and timeouts retry.
     throw platformError(String(reason), {
       status: response.status,
+      bizCode: json.code ?? json.err_code,
       permanent: response.status >= 400 && response.status < 500 && response.status !== 429
         || /reply.*window|quota|frequency|超过|过期/i.test(String(reason)),
       ...(response.status === 429 ? { retryAfter: Number(response.headers.get('retry-after')) } : {}),

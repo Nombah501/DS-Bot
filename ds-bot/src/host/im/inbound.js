@@ -97,13 +97,15 @@ export function inbound(rt, { records, place, kinds, forumBind, connections, del
     }
     const sessionId = target.botId ?? target.roomId
     const { botId, roomId } = target
+    // File receipts belong to the current Session, not a group's stable id.
+    const uploadTo = botId !== undefined ? rt.chatOf(botId) : rt.sessionOfRoom(rt.roomOf(roomId))
     const content = []
     if (body !== '') content.push({ type: 'text', text: body })
     for (const image of msg.images ?? []) content.push({ type: 'image', mediaType: image.mediaType, data: image.data })
     const env = await envFor(conn)
     for (const file of msg.files ?? []) {
       try {
-        const receiptId = await env.uploadFile(rt.botOf(sessionId) ? rt.chatOf(sessionId) : sessionId, file)
+        const receiptId = await env.uploadFile(uploadTo, file)
         content.push({ type: 'file', receiptId })
       } catch {
         await sendText(conn, msg.chat, text('noFile'))

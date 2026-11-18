@@ -57,6 +57,37 @@ export function install(rt) {
     for (const [key, name] of Object.entries(conn.secrets ?? {})) fields[key] = rt.secretValue(name)
     return fields
   }
+  // The reason a request failed, with the chain under it: `fetch failed` alone
+  // hides the DNS, TLS or connection error that the user needs (#1120).
+  const reasonOf = (error) => {
+    const parts = []
+    for (let at = error, depth = 0; at !== undefined && at !== null && depth < 4; at = at.cause, depth += 1) {
+      const text = typeof at === 'string' ? at : at?.message
+      if (typeof text === 'string' && text.trim() !== '' && !parts.includes(text.trim())) parts.push(text.trim())
+    }
+    return parts.length === 0 ? 'The connection failed' : parts.join(': ')
+  }
+
+  // The reason can quote the request URL, and a platform URL carries the token:
+  // keep the secret field values, also as they appear in a URL, out of the text before it
+  // reaches the UI or the log.
+  const scrub = (text, fields, platform) => {
+    let out = text
+    for (const field of platform.fields) {
+      const value = fields[field.key]
+      if (!field.secret || typeof value !== 'string' || value.length < 4) continue
+      for (const form of new Set([value, encodeURIComponent(value)])) out = out.split(form).join('***')
+    }
+    return out
+  }
+  const checkAccount = async (platform, fields, env) => {
+    try {
+      return await adapters[platform.id].check(fields, env)
+    } catch (error) {
+      throw new Error(scrub(rt.redactSecrets(reasonOf(error)), fields, platform))
+    }
+  }
+
   const envFor = async (conn, runtime) => ({
     fetch: globalThis.fetch,
     WebSocket: globalThis.WebSocket,
@@ -77,6 +108,8 @@ export function install(rt) {
     store,
     botOf: id => rt.botOf(id),
     roomOf: id => rt.roomOf(id),
+    chatOf: id => rt.chatOf(id),
+    roomActive: id => rt.roomActive?.(id) || (rt.roomWorkView?.()[id] ?? []).length > 0,
   })
   const cards = cardJournal({
     store,
@@ -261,7 +294,7 @@ export function install(rt) {
         if (!field.options && (fields[field.key] === undefined || String(fields[field.key]).trim() === '')) throw new Error(`${field.label} is required`)
       }
       const env = await envFor({ id: 'im_check', platform: platform.id, settings: fields, secrets: {} }, { get: () => ({}), set: () => {} })
-      const { account } = await adapters[platform.id].check(fields, env)
+      const { account } = await checkAccount(platform, fields, env)
       const conn = {
         id: `im_${randomBytes(4).toString('hex')}`,
         platform: platform.id,
@@ -303,7 +336,7 @@ export function install(rt) {
         for (const field of platform.fields) {
           if (field.secret && check[field.key] === undefined) check[field.key] = rt.secretValue(conn.secrets[field.key])
         }
-        const { account } = await adapters[conn.platform].check(check, env)
+        const { account } = await checkAccount(platform, check, env)
         conn.account = account
         await saveSecrets(conn, platform, fields)
         for (const field of platform.fields) {
@@ -323,6 +356,7 @@ export function install(rt) {
         await rt.secretEndpoint('secret-delete', { name }).catch(() => {})
       }
       delete connections()[id]
+      runners.forget(id)
       await store.remove(id)
       await rt.save()
       return true
@@ -392,7 +426,7 @@ export function install(rt) {
     async 'im-retry'(body) {
       const conn = connections()[String(body.id ?? '')]
       if (conn === undefined) throw new Error('No such IM bot')
-      await runners.restart(conn.id)
+      await runners.retry(conn.id)
       return true
     },
     async 'im-login-start'(body) {
@@ -445,7 +479,7 @@ export function install(rt) {
   const imEndpoint = async (endpoint, body) => {
     const result = await endpoints[endpoint]?.(body ?? {})
     if (result === undefined) throw new Error(`Unknown endpoint ${endpoint}`)
-    void sync()
+    if (endpoint !== 'im-retry') void sync()
     void syncCards()
     return result
   }
@@ -483,14 +517,17 @@ export function install(rt) {
     if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
       for (const { runner } of runners.running()) runner.drafts?.endStep(session.id, event.data?.turn, event.data?.step)
     }
+    if (event.type === 'user/message') {
+      const rpcId = event.data?.source?.rpcId
+      if (typeof rpcId === 'string' && rpcId.startsWith('im:') && Number.isInteger(event.seq)) {
+        imVia.set(session.id, { ...imVia.get(session.id), [event.seq]: rpcId.split(':')[1] })
+      }
+    }
     const botId = rt.chatOwners.get(session.id)
     if (botId === undefined) {
+      // A group's own chat has no Bot of its own; its lines go out from onRoomLine.
       imVia.delete(session.id)
       return
-    }
-    const rpcId = event.type === 'user/message' ? event.data?.source?.rpcId : undefined
-    if (typeof rpcId === 'string' && rpcId.startsWith('im:') && Number.isInteger(event.seq)) {
-      imVia.set(session.id, { ...imVia.get(session.id), [event.seq]: rpcId.split(':')[1] })
     }
     for (const item of rt.displayItems(session.id, [event])) {
       if (item.kind !== 'bot' && item.kind !== 'view') continue
@@ -507,7 +544,7 @@ export function install(rt) {
     if (line.botId === undefined || line.kind !== undefined || typeof line.text !== 'string' || line.text.trim() === '') return
     const body = `**${line.who}**: ${line.text}`
     for (const { conn, runner } of runners.running()) {
-      for (const destination of place.places(conn, { roomId: room.id }, undefined, 'message')) {
+      for (const destination of place.places(conn, { roomId: room.id }, rt.sessionOfRoom(room), 'message')) {
         void runner.delivery.output(destination, { text: body, rich: true })
       }
     }
@@ -529,6 +566,7 @@ export function install(rt) {
     void rt.load().then(() => sync()).catch(() => {})
     return () => {
       clearInterval(interval)
+      place.clearOrigins()
       return runners.teardown().then(() => store.flush(() => cards.flushClaims()))
     }
   }, 'ds-bot: im')
@@ -538,5 +576,8 @@ export function install(rt) {
   const imQuestionClaimed = kinds.questionClaimed
   const imQuestionAnswered = kinds.questionAnswered
 
-  Object.assign(rt, { imView, imStatusView, imViaView, imEndpoint, imQuestionClaimed, imQuestionAnswered })
+  Object.assign(rt, {
+    imView, imStatusView, imViaView, imEndpoint, imQuestionClaimed, imQuestionAnswered,
+    holdImOrigin: place.holdOrigin, peekImOrigin: place.peekOrigin, dropImOrigin: place.dropOrigin,
+  })
 }

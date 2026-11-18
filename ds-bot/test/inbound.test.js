@@ -29,6 +29,7 @@ const bench = ({ capabilities = { topics: true, personLanguage: true }, onSave, 
     botOf: id => ['a', 'b'].includes(id) ? { name: id === 'a' ? 'Chief' : 'Writer' } : undefined,
     chatOf: id => `chat-${id}`,
     roomOf: id => id === 'room' ? { name: 'Operations' } : undefined,
+    sessionOfRoom: room => room.sessionId,
     state: {}, live: new Map(), approvalsView: () => [],
   }
   const connections = () => ({ one: conn })
@@ -257,6 +258,18 @@ test('Inbound: text, images and uploaded files retain their content and Bot uplo
   assert.match(b.sent[0].requestId, /^im:test:/)
   assert.equal(b.uploads[0][0], 'chat-a')
   assert.equal(b.origins.get(b.sent[0].requestId).person.id, 'ann')
+})
+
+test('Inbound: group attachments upload under the bound group’s current Session after a part switch', async () => {
+  const b = bench()
+  const room = { id: 'room', name: 'Operations', sessionId: 'room-part-2' }
+  b.rt.roomOf = id => id === room.id ? room : undefined
+  b.current().chats.forum.topics[7].target = { roomId: room.id }
+  const file = { name: 'report.txt', data: 'report' }
+  await b.message('', { chat: forum, files: [file] })
+  assert.deepEqual(b.uploads, [['room-part-2', file]])
+  assert.equal(b.sent[0].sessionId, 'room')
+  assert.deepEqual(b.sent[0].content, [{ type: 'file', receiptId: 'receipt' }])
 })
 
 test('Inbound: failed file uploads notify the person and still send remaining text', async () => {

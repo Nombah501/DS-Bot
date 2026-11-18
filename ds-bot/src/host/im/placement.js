@@ -2,8 +2,10 @@
 // address can still take it, and which Bot or group an address leads to. It also
 // records each turn's Origin and Initiator, because the reply-where-asked rule
 // (a Bot turn answers only at its Origin) is the main input to "where".
+import { randomUUID } from 'node:crypto'
 import { imPlatform } from '../../shared/im-platforms.js'
 import { addressKey, allows, sameTarget, topicLive } from './topics.js'
+import { replyOrigins } from './origin.js'
 
 const personOf = (conn, id) => conn.paired?.find(person => person.id === id)
 const topicMode = conn => imPlatform(conn?.platform)?.topics === true
@@ -26,7 +28,7 @@ function topicTarget(conn, address) {
  * @param {(id: string) => any} deps.botOf
  * @param {(id: string) => any} deps.roomOf
  */
-export function placement({ connections, store, botOf, roomOf }) {
+export function placement({ connections, store, botOf, roomOf, chatOf = id => id, roomActive = () => false }) {
   // A caller may hold a connection object that a save has since replaced.
   const fresh = conn => connections()[conn.id] ?? conn
   const follow = (conn, address) => {
@@ -46,6 +48,9 @@ export function placement({ connections, store, botOf, roomOf }) {
     if (target?.roomId !== undefined && roomOf(target.roomId) !== undefined) return target
     return undefined
   }
+
+  const origins = replyOrigins({ connections, targetOf: targetIn, roomOf, roomActive })
+  const heldTelegram = new Map()
 
   // The address still leads to `target`; a private chat must also still admit its person.
   const bound = (conn, address, target) => {
@@ -105,7 +110,6 @@ export function placement({ connections, store, botOf, roomOf }) {
   // `initiator` is the turn's record, taken when its output was placed.
   const botPlaces = (conn, botId, initiator, cards) => {
     const targets = listeners(conn, { botId })
-    if (!topicMode(conn)) return targets
     const originConn = connections()[initiator?.connectionId]
     if (originConn?.enabled !== false && topicMode(originConn)) {
       const saved = originConn.chats?.[initiator.chatKey]
@@ -126,8 +130,14 @@ export function placement({ connections, store, botOf, roomOf }) {
   // `output.initiator` keeps the producing turn's Origin, so a queued item is checked
   // against that turn even after it ended or the session started another one.
   const placesOf = (conn, output) => {
-    const { owner, kind } = output
-    const out = owner.roomId === undefined ? botPlaces(conn, owner.botId, output.initiator, kind === 'card') : listeners(conn, owner)
+    const { owner, kind, origin } = output
+    if (!topicMode(conn) && kind !== 'typing') {
+      if (origin?.connectionId !== conn.id || !origins.valid(origin)) return []
+      const out = listeners(conn, owner).filter(place => place.chatKey === origin.chatKey)
+      return (kind === 'draft' ? out.filter(place => place.chat.kind === 'direct') : out).map(place => ({ ...place, output }))
+    }
+    const out = !topicMode(conn) ? listeners(conn, owner)
+      : owner.roomId === undefined ? botPlaces(conn, owner.botId, output.initiator, kind === 'card') : listeners(conn, owner)
     return (kind === 'draft' ? out.filter(place => place.chat.kind === 'direct') : out).map(place => ({ ...place, output }))
   }
 
@@ -140,7 +150,8 @@ export function placement({ connections, store, botOf, roomOf }) {
      */
     places(conn, owner, sessionId, kind) {
       const initiator = owner.roomId === undefined ? initiatorAnywhere(sessionId) : undefined
-      return placesOf(fresh(conn), { owner, sessionId, kind, ...(initiator === undefined ? {} : { initiator }) })
+      const origin = origins.of(sessionId)
+      return placesOf(fresh(conn), { owner, sessionId, kind, origin, ...(initiator === undefined ? {} : { initiator }) })
     },
     /** The Bot or DS Bot group chat an address leads to, if it still exists. */
     targetOf(conn, address) {
@@ -157,7 +168,9 @@ export function placement({ connections, store, botOf, roomOf }) {
      */
     deliverable(conn, address, { target, output } = {}) {
       const current = fresh(conn)
-      if (!topicMode(current)) return true
+      if (!topicMode(current)) return current.enabled !== false
+        && (target === undefined || sameTarget(targetIn(current, address), target))
+        && (output?.origin === undefined || origins.valid(output.origin))
       if (!bound(current, address, target)) return false
       return output === undefined || placesOf(current, output)
         .some(place => addressKey(place.chat) === addressKey(address))
@@ -166,6 +179,10 @@ export function placement({ connections, store, botOf, roomOf }) {
     follow,
     /** A Telegram message with this request id was sent to a Bot from `address`. */
     async asked(conn, requestId, sender, address) {
+      if (!topicMode(conn)) {
+        origins.asked(conn, requestId, sender, address)
+        return
+      }
       const data = await store.of(conn.id)
       if (imPlatform(conn.platform)?.privateCards !== true) return
       data.requests[requestId] = { sender, connectionId: conn.id, chatKey: address.key, ...(address.threadId === undefined ? {} : { threadId: address.threadId }) }
@@ -173,15 +190,22 @@ export function placement({ connections, store, botOf, roomOf }) {
     },
     /** The request was never delivered to the Bot. */
     async unasked(conn, requestId) {
+      if (!topicMode(conn)) {
+        origins.unasked(requestId)
+        return
+      }
       const data = await store.of(conn.id)
       delete data.requests[requestId]
       store.save(conn.id)
     },
     /** Turns a session's turn events into its Origin and Initiator record. */
     sessionEvent(session, event) {
+      origins.sessionEvent(session, event)
       const rpcId = event.type === 'user/message' ? event.data?.source?.rpcId : undefined
+      const token = event.type === 'user/message' ? event.data?.source?.imOrigin : undefined
       const conns = connections()
-      let request
+      let request = heldTelegram.get(token)
+      if (request !== undefined) heldTelegram.delete(token)
       if (rpcId !== undefined) {
         for (const [id, data] of store.loaded()) {
           if (conns[id] !== undefined && data.requests[rpcId]) {
@@ -210,5 +234,30 @@ export function placement({ connections, store, botOf, roomOf }) {
     async initiatorOf(conn, sessionId) {
       return (await store.of(conn.id)).turns[sessionId]?.initiator
     },
+    /** A successful approval continues the asking chat, but never claims a stale Card. */
+    claimChat(conn, address, sender) {
+      if (topicMode(conn)) return
+      const target = targetIn(fresh(conn), address)
+      const sessionId = target?.roomId !== undefined ? roomOf(target.roomId)?.sessionId ?? target.roomId : chatOf(target?.botId)
+      origins.claim(sessionId, origins.capture(fresh(conn), sender, address))
+    },
+    holdOrigin(sessionId) {
+      const initiator = initiatorAnywhere(sessionId)
+      if (initiator === undefined) return origins.hold(sessionId)
+      const token = randomUUID()
+      heldTelegram.set(token, structuredClone(initiator))
+      return token
+    },
+    peekOrigin(sessionId, token) {
+      const initiator = heldTelegram.get(token)
+      if (initiator === undefined) return origins.peek(sessionId, token)
+      for (const [id, data] of store.loaded()) {
+        if (!topicMode(connections()[id])) continue
+        data.turns[sessionId] = { opened: true, initiator: structuredClone(initiator) }
+        store.save(id)
+      }
+    },
+    dropOrigin(token) { heldTelegram.delete(token); origins.release(token) },
+    clearOrigins() { heldTelegram.clear(); origins.clear() },
   }
 }

@@ -14,7 +14,7 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded 
   const calls = []
   const queue = []
   let nextId = 700
-  const handle = {
+  let handle = {
     sendCard: async () => {},
     sendPrivateCard: async () => {},
     edit: async (chat, messageId, { text }) => { calls.push(['edit', chat.key, messageId, text]) },
@@ -34,7 +34,7 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded 
     textForChat: () => key => `<${key}>`,
     textForPerson: () => key => `<${key}>`,
     handleOf: () => connected ? handle : undefined,
-    deliveryOf: () => running ? { output: (place, content, { sent }) => { queue.push({ place, job: { ...content, sent } }) } } : undefined,
+    deliveryOf: () => running ? { output: (place, content, { sent, dropped }) => { queue.push({ place, job: { ...content, sent, dropped } }) } } : undefined,
     paired: (_conn, id) => conn.paired.some(person => person.id === id),
     sourceOpen: () => open,
     warn: () => {},
@@ -45,7 +45,7 @@ const bench = ({ conn = telegram(), open = () => false, failEdits = 0, unloaded 
     await job.sent({ messageId: nextId++, ...sent }, place.chat)
     return job
   }
-  return { conn, data, calls, queue, cards, deliver, reveal: () => { loaded = true } }
+  return { conn, data, calls, queue, cards, deliver, reveal: () => { loaded = true }, replaceHandle: () => { handle = { ...handle } } }
 }
 const question = { text: 'Pick one', options: [{ label: 'Red', data: 'q:1:0', style: 'success' }, { label: 'Blue', data: 'q:1:1' }] }
 const sendQuestion = (b, chat = forum, initiator) => b.cards.send(b.conn, 'q:1', [{ chat, target: { botId: 'a' } }], 'Pick one', undefined, () => structuredClone(question), initiator)
@@ -53,7 +53,7 @@ const sendQuestion = (b, chat = forum, initiator) => b.cards.send(b.conn, 'q:1',
 test('Card journal: a Card is recorded before it is queued, and learns its message once sent', async () => {
   const b = bench()
   await sendQuestion(b)
-  assert.equal(b.cards.sent('c1', 'q:1'), true, 'a dropped job must not be sent again')
+  assert.equal(b.cards.sent('c1', 'q:1'), true, 'a queued Card reserves its copy')
   assert.equal(b.queue.length, 1)
   assert.equal(b.data.cards['q:1'][0].messageId, undefined)
   await b.deliver()
@@ -255,4 +255,51 @@ test('Card journal: loading an empty journal clears a claim with no matching Car
   b.data.cards['q:1'] = [{ chatKey: '-60', threadId: 40, messageId: 700, card: structuredClone(question) }]
   b.cards.claim(b.conn, 'q:1', 'Blue', ['Blue'])
   assert.equal(b.data.cards['q:1'][0].answer, 'Blue', 'a drained claim cannot answer a later Card')
+})
+
+for (const reason of ['adapter', 'placement']) test(`Card journal: ${reason} drop ${reason === 'adapter' ? 'reopens' : 'keeps'} the approval reservation`, async () => {
+  const b = bench({ open: () => true })
+  const reconcile = async () => {
+    if (!b.cards.sent(b.conn.id, 'a:1')) await b.cards.send(b.conn, 'a:1', [{ chat: forum, target: { botId: 'a' } }], 'Allow?')
+  }
+  await reconcile()
+  const { job } = b.queue.shift()
+  await job.dropped(reason)
+  await reconcile()
+  assert.equal(b.queue.length, reason === 'adapter' ? 1 : 0)
+  if (reason === 'adapter') {
+    await b.deliver()
+    assert.equal(b.data.cards['a:1'][0].messageId, 700)
+  } else assert.equal(b.cards.sent(b.conn.id, 'a:1'), true)
+})
+
+test('Card journal: concurrent approval reconciliation reserves once and only re-sends the dropped copy', async () => {
+  const b = bench({ open: () => true })
+  const targets = [forum, { ...forum, threadId: 41 }].map(chat => ({ chat, target: { botId: 'a' } }))
+  const reconcile = () => b.cards.send(b.conn, 'a:1', targets, 'Allow?')
+  await Promise.all([reconcile(), reconcile()])
+  assert.equal(b.queue.length, 2)
+  await b.deliver()
+  const dropped = b.queue.shift()
+  await dropped.job.dropped('adapter')
+  await reconcile()
+  assert.equal(b.queue.length, 1)
+  assert.equal(b.queue[0].place.chat.threadId, 41)
+  await b.deliver()
+  assert.deepEqual(b.data.cards['a:1'].map(entry => entry.messageId), [700, 701])
+})
+
+for (const reason of ['adapter', 'placement']) test(`Card journal: a public fallback survives reconnect and handles ${reason} drops`, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  const b = bench({ open: () => true })
+  await sendQuestion(b, forum, { sender: ann })
+  await b.deliver({ ephemeralMessageId: 'private' })
+  t.mock.timers.tick(5 * 60 * 1000)
+  await b.cards.expirePrivate(b.conn)
+  b.replaceHandle()
+  await b.cards.expirePrivate(b.conn)
+  assert.equal(b.queue.length, 1, 'reconnect must not duplicate the retained public fallback')
+  await b.queue.shift().job.dropped(reason)
+  await b.cards.expirePrivate(b.conn)
+  assert.equal(b.queue.length, reason === 'adapter' ? 1 : 0)
 })

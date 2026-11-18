@@ -116,19 +116,22 @@ test('Placement: a turn ends its Origin; the next turn without Telegram is Off-T
   assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['5', 101]])
 })
 
-test('Placement: a platform without Topics sends to every binding of the Bot', async () => {
+test('Placement: a platform without Topics answers only the asking binding of the Bot', async () => {
   const conn = { id: 'd1', platform: 'discord', botId: 'a', paired: [{ id: '9' }], chats: { g: { kind: 'group', target: { botId: 'a' } }, d: { kind: 'direct' }, other: { kind: 'group', target: { botId: 'b' } } } }
   const s = setup([conn])
-  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['g', undefined], ['d', undefined]])
+  assert.deepEqual(s.place.places(conn, { botId: 'a' }, 'a', 'message'), [])
+  await turnFrom(s, conn, { key: 'g', kind: 'group' })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['g', undefined]])
 })
 
 test('Placement: DS Bot group chat lines go to every binding of the group, whatever the Origin', async () => {
   const conn = telegram()
   conn.chats.g = { kind: 'group', target: { roomId: 'r' } }
   conn.chats['-60'].topics[41] = { target: { roomId: 'r' } }
+  conn.chats['-60'].topics[42] = { target: { roomId: 'r' } }
   const s = setup([conn])
   await turnFrom(s, conn, { key: '5', kind: 'direct', threadId: 101 })
-  assert.deepEqual(addresses(s.place.places(conn, { roomId: 'r' }, 'r', 'message')), [['-60', 41], ['g', undefined]])
+  assert.deepEqual(addresses(s.place.places(conn, { roomId: 'r' }, 'r', 'message')), [['-60', 41], ['-60', 42], ['g', undefined]])
 })
 
 test('Placement: queued output keeps its own turn\'s Origin after that turn ends, until the Origin is unbound', async () => {
@@ -187,4 +190,61 @@ test('Placement: an address alone names its Bot or group, on every platform', as
   assert.deepEqual(s.place.targetOf(discord, { key: 'd' }), { botId: 'a' })
   assert.deepEqual(s.place.targetOf(conn, { key: '5', kind: 'direct', threadId: 101 }), { botId: 'a' })
   assert.equal(s.place.targetOf(conn, { key: 'unknown', kind: 'group' }), undefined)
+})
+
+test('Placement: non-Topic group lines answer only the asking chat and replay rechecks binding and pairing', async () => {
+  const conn = { id: 'd1', platform: 'discord', paired: [{ id: '9' }], chats: {
+    g1: { kind: 'group', target: { roomId: 'r' } }, g2: { kind: 'group', target: { roomId: 'r' } },
+  } }
+  const s = setup([conn])
+  await s.place.asked(conn, 'im:discord:room', { id: '9' }, { key: 'g1', kind: 'group' })
+  s.place.sessionEvent({ id: 'r' }, { type: 'turn/start', data: { turn: 1 } })
+  s.place.sessionEvent({ id: 'r' }, { type: 'user/message', data: { source: { rpcId: 'im:discord:room' } } })
+  const [queued] = s.place.places(conn, { roomId: 'r' }, 'r', 'message')
+  assert.deepEqual(addresses(s.place.places(conn, { roomId: 'r' }, 'r', 'message')), [['g1', undefined]])
+  conn.paired = []
+  assert.equal(s.place.deliverable(conn, queued.chat, queued), false)
+  conn.paired = [{ id: '9' }]
+  assert.equal(s.place.deliverable(conn, queued.chat, queued), true)
+  delete conn.chats.g1.target
+  assert.equal(s.place.deliverable(conn, queued.chat, queued), false)
+})
+
+test('Placement: Telegram holds its Initiator across a part switch and releases the token', async () => {
+  const conn = telegram()
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '-60', kind: 'group', threadId: 40 })
+  const token = s.place.holdOrigin('a')
+  s.place.sessionEvent({ id: 'a' }, { type: 'turn/end', data: { turn: 1 } })
+  s.place.peekOrigin('next', token)
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'next', 'message')), [['-60', 40]])
+  s.place.sessionEvent({ id: 'next' }, { type: 'turn/start', data: { turn: 2 } })
+  s.place.sessionEvent({ id: 'next' }, { type: 'user/message', data: { source: { imOrigin: token } } })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'next', 'message')), [['-60', 40]])
+  s.place.dropOrigin(token)
+  s.place.sessionEvent({ id: 'other' }, { type: 'turn/start', data: { turn: 3 } })
+  s.place.sessionEvent({ id: 'other' }, { type: 'user/message', data: { source: { imOrigin: token } } })
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'other', 'message')), [['5', 101]])
+})
+
+test('Placement: later Paired people and a Web steer do not change Telegram Initiator', async () => {
+  const conn = telegram()
+  conn.paired.push({ id: '10', access: 'all' })
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: '-60', kind: 'group', threadId: 40 })
+  await s.place.asked(conn, 'im:telegram:join', { id: '10' }, { key: '5', kind: 'direct', threadId: 101 })
+  s.place.sessionEvent({ id: 'a' }, { type: 'user/message', data: { source: { rpcId: 'im:telegram:join' } } })
+  s.place.sessionEvent({ id: 'a' }, { type: 'user/message', data: { source: { kind: 'web' } } })
+  assert.equal((await s.place.initiatorOf(conn, 'a')).sender.id, '9')
+  assert.deepEqual(addresses(s.place.places(conn, { botId: 'a' }, 'a', 'message')), [['-60', 40]])
+})
+
+test('Placement: a non-Topic queued send keeps the binding captured at arrival even after in-place edits', async () => {
+  const conn = { id: 'd1', platform: 'discord', paired: [{ id: '9' }], chats: { g: { kind: 'group', target: { botId: 'a' } } } }
+  const s = setup([conn])
+  await turnFrom(s, conn, { key: 'g', kind: 'group' })
+  const [queued] = s.place.places(conn, { botId: 'a' }, 'a', 'message')
+  assert.ok(queued)
+  conn.chats.g.target.botId = 'b'
+  assert.equal(s.place.deliverable(conn, queued.chat, queued), false)
 })

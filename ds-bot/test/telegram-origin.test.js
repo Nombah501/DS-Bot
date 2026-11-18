@@ -234,3 +234,45 @@ for (const place of ['forum', 'private']) test(`S1: a ${place}-origin Step messa
   await delay(80)
   assert.deepEqual(outputs(s, after, 'Queued step'), [expected, expected], 'the refused attempt and one retry')
 })
+
+test('S1: a Telegram part-switch handoff carries the Origin into its new Session', async t => {
+  const s = await setup(t)
+  await begin(s, { chat: forum, message_thread_id: 40 })
+  const token = s.rt.holdImOrigin('a')
+  assert.equal(typeof token, 'string')
+  s.sessionEvent('turn/end', { turn: 1 })
+  s.rt.state.bots.a.sessionId = 'new-part'
+  s.rt.chatOwners.delete('a')
+  s.rt.chatOwners.set('new-part', 'a')
+  s.rt.peekImOrigin('new-part', token)
+  s.sessionEvent('turn/start', { turn: 2 }, 'new-part')
+  s.sessionEvent('user/message', { source: { imOrigin: token } }, 'new-part')
+  s.rt.dropImOrigin(token)
+  const after = s.calls.length
+  s.step('After Telegram part switch', {}, 'new-part')
+  await s.request('sendRichMessage', p => p.rich_message.html.includes('After Telegram part switch'), after)
+  assert.deepEqual(outputs(s, after, 'After Telegram part switch'), [['-60', 40]])
+})
+
+test('S1: a button-answered Telegram question continues at its Origin', async t => {
+  const s = await setup(t)
+  await begin(s, { chat: forum, message_thread_id: 40 })
+  s.replies.sendRichMessage = p => ({ ok: true, result: p.ephemeral_message_parameters
+    ? { message_id: 0, ephemeral_message_id: 701, receiver_user: { id: 9 } } : { message_id: 702 } })
+  await s.question({ question: 'Continue here?', options: [{ label: 'Yes' }] })
+  const card = await s.request('sendRichMessage', p => p.rich_message.html.includes('Continue here?'))
+  s.sessionEvent('turn/end', { turn: 1 })
+  s.pushUpdate({ callback_query: {
+    id: 'origin-question', from: { id: 9, first_name: 'Ann' },
+    data: /data="([^"]+)"/.exec(card.params.rich_message.html)[1],
+    message: { message_id: 0, ephemeral_message_id: 701, receiver_user: { id: 9 }, chat: forum, message_thread_id: 40 },
+  } })
+  const followup = await until(() => s.agents.get('a')?.followups?.at(-1))
+  assert.match(followup.source.rpcId, /^im:telegram:/)
+  s.sessionEvent('turn/start', { turn: 2 })
+  s.sessionEvent('user/message', followup)
+  const after = s.calls.length
+  s.step('After Telegram button answer')
+  await s.request('sendRichMessage', p => p.rich_message.html.includes('After Telegram button answer'), after)
+  assert.deepEqual(outputs(s, after, 'After Telegram button answer'), [['-60', 40]])
+})

@@ -19,6 +19,8 @@ const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async (
   const queue = []
   const pending = new Map()
   const denied = new Set()
+  const origins = new Map()
+  const claims = []
   const state = { questions: {}, secretRequests: {}, views: {} }
   const handle = {
     editCard: async (address, messageId, card) => { edits.push({ chat: address, messageId, card: structuredClone(card) }) },
@@ -44,6 +46,7 @@ const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async (
   const rt = {
     state, chatOwners: new Map([['session', 'a']]), pastOwners: new Map(),
     botOf: () => ({ name: 'Alice' }), readOnly: () => undefined,
+    chatOf: () => 'session',
     approvalsView: () => [...pending.values()],
     answerApproval: id => { if (!pending.delete(id)) throw stale() },
     answerQuestion: async (sessionId, id) => {
@@ -56,6 +59,9 @@ const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async (
     cards, connections, handleOf: () => handle, running: () => true,
     place: {
       places: (_conn, target) => chats.map(chat => ({ chat, target })), initiatorOf,
+      asked: async (_conn, requestId, sender, address) => { origins.set(requestId, { sender, address }) },
+      unasked: async (_conn, requestId) => { origins.delete(requestId) },
+      claimChat: (_conn, address, sender) => { claims.push({ address, sender }) },
       may: (_conn, id, target) => target !== undefined && !denied.has(id),
     },
     sendText: (_conn, address, body) => { messages.push({ chat: address, text: body }) },
@@ -85,7 +91,7 @@ const bench = ({ platform = 'telegram', capabilities = {}, initiatorOf = async (
   const press = (data, sender = ann, extra = {}) => kinds.press(conn, { chat, sender, data, answer: body => { toasts.push(body) }, ...extra })
   const number = (body, sender = ann) => kinds.number(conn, { chat, sender, text: body })
   const clear = () => { messages.length = 0; edits.length = 0; toasts.length = 0 }
-  return { conn, rt, state, kinds, pending, denied, messages, edits, toasts, deliver, question, approval, press, number, clear, reconcile: cards.settleGone }
+  return { conn, rt, state, kinds, pending, denied, messages, edits, toasts, origins, claims, deliver, question, approval, press, number, clear, reconcile: cards.settleGone }
 }
 
 test('Card kinds: an in-range number without Access is denied in chat and leaves the Card answerable', async () => {
@@ -295,3 +301,40 @@ for (const kind of ['question', 'approval']) {
     ])
   })
 }
+
+test('Card kinds: a question answer registers its Origin before passing the continuation request id', async () => {
+  const b = bench()
+  await b.question()
+  let continued
+  b.rt.answerQuestion = async (sessionId, id, answer, requestId) => {
+    continued = { sessionId, id, answer, requestId }
+    assert.deepEqual(b.origins.get(requestId), { sender: ann, address: chat })
+    delete b.state.questions[sessionId]
+  }
+  await b.press('q:question:0')
+  assert.match(continued.requestId, /^im:telegram:/)
+  assert.deepEqual(continued.answer, { selected: ['Red'] })
+})
+
+test('Card kinds: stale question answers release their request and stale approvals never claim a chat', async () => {
+  const b = bench()
+  await b.question()
+  b.rt.answerQuestion = async () => { throw stale() }
+  await b.press('q:question:0')
+  assert.equal(b.origins.size, 0)
+  await b.approval()
+  b.rt.answerApproval = () => { throw stale() }
+  await b.press('a:approval:allow')
+  assert.deepEqual(b.claims, [])
+})
+
+test('Card kinds: reconciliation sends an approval opened while disconnected once', async () => {
+  const b = bench()
+  b.pending.set('waiting', { id: 'waiting', botId: 'a', sessionId: 'session', tool: 'bash' })
+  await b.kinds.sync(b.conn)
+  await b.deliver()
+  assert.equal(b.messages.filter(message => /bash/.test(message.card?.text ?? message.text ?? '')).length, 1)
+  await b.kinds.sync(b.conn)
+  await b.deliver()
+  assert.equal(b.messages.length, 1)
+})

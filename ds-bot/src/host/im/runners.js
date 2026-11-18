@@ -8,6 +8,30 @@ const TYPING_MS = 4_000
 export function connectionRunners(rt, { connections, platformOf, wants, connect, place, steps, textForChat, store, ensurePrivateTopics, recoverTopic, expirePrivate, syncCards, migrate, message, action, stop: onStop, widgetQuery }) {
   const runners = new Map()
   const statuses = new Map()
+  const deliveries = new Map()
+  const sendStatuses = new Map()
+  const setSendStatus = (id, key, next) => {
+    if (next === undefined) {
+      const chats = sendStatuses.get(id)
+      chats?.delete(key)
+      if (chats?.size === 0) sendStatuses.delete(id)
+      return
+    }
+    let chats = sendStatuses.get(id)
+    if (chats === undefined) sendStatuses.set(id, chats = new Map())
+    const error = typeof next.error === 'string' ? rt.redactSecrets(next.error) : next.error
+    chats.set(key, { ...next, ...(error === undefined ? {} : { error }), at: Date.now() })
+  }
+  const combinedStatus = id => {
+    const adapter = statuses.get(id)
+    if (adapter?.state === 'error' || adapter?.state === 'off') return adapter
+    let picked
+    for (const entry of sendStatuses.get(id)?.values() ?? []) {
+      if (picked === undefined || (picked.state !== 'error' && entry.state === 'error') || (picked.state === entry.state && entry.at > picked.at)) picked = entry
+    }
+    if (picked !== undefined && (picked.state === 'error' || adapter === undefined || adapter.state === 'ready' || adapter.state === 'connecting')) return picked
+    return adapter
+  }
   let stopped = false
   let syncing = Promise.resolve()
   // `state.im.connections` is replaced wholesale when a save is adopted, so anything
@@ -39,14 +63,19 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
   const stop = async id => {
     const runner = runners.get(id)
     runners.delete(id)
-    const delivered = runner?.delivery.close()
+    runner?.delivery.close()
     if (runner?.typing !== undefined) clearInterval(runner.typing)
     clearInterval(runner?.privateTimer)
     runner?.panels?.stop()
     runner?.drafts?.dispose()
     await Promise.resolve(runner?.handle?.stop?.()).catch(() => {})
-    await delivered
+    if (stopped || fresh(id) === undefined) forget(id)
     if (statuses.get(id)?.state !== 'error') setStatus(id, { state: 'off', at: Date.now() })
+  }
+  const forget = id => {
+    deliveries.get(id)?.delivery.forget()
+    deliveries.delete(id)
+    sendStatuses.delete(id)
   }
   const start = async conn => {
     if (runners.has(conn.id)) return
@@ -57,13 +86,16 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
       const current = runner.connection()
       return current === undefined ? false : recoverTopic(current, chat)
     }
+    let retained = deliveries.get(conn.id)
+    if (retained === undefined) deliveries.set(conn.id, retained = { queues: new Map() })
     runner.delivery = delivery({
-      connection: runner.connection, placement: place,
+      connection: runner.connection, placement: place, state: retained,
       sending: key => runner.drafts?.sending(key),
       recoverTopic: recover,
-      setStatus: next => { if (runner.connection() !== undefined) setStatus(conn.id, next) },
+      setStatus: (key, next) => { if (runner.connection() !== undefined) setSendStatus(conn.id, key, next) },
       warn: (template, error) => rt.warn(template, rt.redactSecrets(String(error?.message ?? error))),
     })
+    retained.delivery = runner.delivery
     runners.set(conn.id, runner)
     setStatus(conn.id, { state: 'connecting', at: Date.now() })
     try {
@@ -175,12 +207,15 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
         }
       }
       for (const id of [...runners.keys()]) if (conns[id] === undefined) await stop(id)
-      for (const id of [...statuses.keys()]) if (conns[id] === undefined) statuses.delete(id)
+      for (const id of new Set([...statuses.keys(), ...deliveries.keys()])) {
+        if (conns[id] === undefined) { statuses.delete(id); forget(id) }
+      }
       for (const conn of Object.values(conns)) {
         if (conn.enabled === false || !runners.has(conn.id)) {
           if (statuses.get(conn.id)?.state !== 'error') setStatus(conn.id, { state: 'off', at: Date.now() })
         }
       }
+      await syncCards()
     })
     syncing = run.catch(() => {})
     return run
@@ -193,9 +228,23 @@ export function connectionRunners(rt, { connections, platformOf, wants, connect,
         if (runner !== undefined) yield { conn, runner }
       }
     },
-    sync, stop,
+    sync, stop, forget,
     restart: async id => { if (runners.has(id)) await stop(id); await sync() },
-    statusView: () => Object.fromEntries([...statuses.entries()].map(([id, status]) => [id, { state: status.state, ...(status.error !== undefined ? { error: status.error } : {}), at: status.at }])),
-    teardown: () => { stopped = true; return Promise.all([...runners.keys()].map(stop)) },
+    retry: async id => {
+      if (statuses.get(id)?.state !== 'ready') {
+        if (runners.has(id)) await stop(id)
+        await sync()
+      }
+      runners.get(id)?.delivery.retry()
+    },
+    statusView: () => Object.fromEntries([...new Set([...statuses.keys(), ...sendStatuses.keys()])].map(id => {
+      const status = combinedStatus(id)
+      return [id, { state: status.state, ...(status.error !== undefined ? { error: status.error } : {}), at: status.at }]
+    })),
+    teardown: async () => {
+      stopped = true
+      await Promise.all([...runners.keys()].map(stop))
+      for (const id of deliveries.keys()) forget(id)
+    },
   }
 }

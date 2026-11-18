@@ -52,7 +52,7 @@ const direct = { key: '5', kind: 'direct', threadId: 101 }
 const ann = { id: '9', languageCode: 'en' }
 // Let the rejected adapter attempt reach its retry policy before advancing time.
 const nextTurn = () => new Promise(setImmediate)
-const bench = ({ conn = telegram(), send, sending, recoverTopic, attach = true } = {}) => {
+const bench = ({ conn = telegram(), send, sending, recoverTopic, attach = true, state = { queues: new Map() } } = {}) => {
   const env = setup([conn])
   const calls = []
   const statuses = []
@@ -69,11 +69,11 @@ const bench = ({ conn = telegram(), send, sending, recoverTopic, attach = true }
     deletePrivateCard: async () => {},
   }
   const queue = delivery({
-    connection: () => env.byId[conn.id], placement: env.place, sending, recoverTopic,
-    setStatus: status => statuses.push(status), warn: (...args) => warnings.push(args),
+    connection: () => env.byId[conn.id], placement: env.place, sending, recoverTopic, state,
+    setStatus: (_key, status) => { if (status !== undefined) statuses.push(status) }, warn: (...args) => warnings.push(args),
   })
   if (attach) queue.attach(handle)
-  return { ...env, conn, queue, handle, calls, statuses, warnings }
+  return { ...env, conn, queue, handle, calls, statuses, warnings, state }
 }
 const origin = async (b, chat = forum, turn = 1) => {
   const requestId = `request-${turn}`
@@ -164,7 +164,7 @@ test('reserve queues before attach, bound status needs no turn output, and Bridg
 test('non-Topics current-Bot output keeps platform capability gates', async () => {
   const conn = { id: 'other', platform: 'dingtalk', botId: 'a', chats: { dm: { kind: 'direct' } } }
   const b = bench({ conn })
-  const destination = b.place.places(conn, { botId: 'a' }, 's', 'message')[0]
+  const destination = { chat: { key: 'dm', kind: 'direct' }, target: { botId: 'a' } }
   await b.queue.output(destination, { text: 'Current Bot', rich: true })
   await b.queue.output(destination, { text: 'Card fallback', card: { text: 'Card' } })
   assert.deepEqual(b.calls.map(call => call.text), ['Current Bot', 'Card fallback'])
@@ -188,7 +188,7 @@ test('FIFO is per physical address including Topic, not per chat', async () => {
   await b.queue.close()
 })
 
-for (const kind of ['permanent', 'unknown', 'stopped']) test(`${kind} send failures drop without retry and the next Step proceeds`, async t => {
+for (const kind of ['permanent', 'unknown', 'stopped']) test(`${kind} failures release the queue; only permanent sends are retained for replay`, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const b = bench({ send: async (_chat, _content, attempt) => {
     if (attempt === 1) throw Object.assign(new Error('wire refused'), { [kind]: true })
@@ -199,6 +199,9 @@ for (const kind of ['permanent', 'unknown', 'stopped']) test(`${kind} send failu
   t.mock.timers.tick(10_000)
   assert.deepEqual(b.calls.map(call => call.text), ['Refused', 'Next'])
   assert.deepEqual(b.statuses, kind === 'permanent' ? [{ state: 'error', error: 'wire refused' }] : [])
+  await b.queue.retry()
+  await nextTurn()
+  assert.deepEqual(b.calls.map(call => call.text), kind === 'permanent' ? ['Refused', 'Next', 'Refused'] : ['Refused', 'Next'])
   await b.queue.close()
 })
 
@@ -231,7 +234,7 @@ test('a bound status waiting for its Draft is dropped if the Topic is rebound', 
   await b.queue.close()
 })
 
-for (const stage of ['retry', 'Draft', 'recovery']) test(`close discards work during ${stage} without waiting or reviving the old handle`, async t => {
+for (const stage of ['retry', 'Draft', 'recovery']) test(`close retains work during ${stage} for a new runner without reviving the old handle`, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const gate = deferred()
   const started = deferred()
@@ -246,10 +249,14 @@ for (const stage of ['retry', 'Draft', 'recovery']) test(`close discards work du
   const first = b.queue.output({ chat: direct, target: { botId: 'a' } }, { text: 'Held' })
   await started.promise
   await nextTurn()
-  const second = b.queue.output({ chat: direct, target: { botId: 'a' } }, { text: 'Discarded' })
+  const second = b.queue.output({ chat: direct, target: { botId: 'a' } }, { text: 'Follower' })
   await b.queue.close()
   await Promise.all([first, second])
   const attempts = b.calls.length
+  const replay = bench({ state: b.state })
+  replay.queue.retry()
+  await nextTurn()
+  assert.deepEqual(replay.calls.map(call => call.text), stage === 'Draft' ? [] : ['Held', 'Follower'])
   await b.queue.notice(direct, { text: 'After close' })
   b.queue.attach(b.handle)
   gate.resolve()
@@ -257,10 +264,12 @@ for (const stage of ['retry', 'Draft', 'recovery']) test(`close discards work du
   t.mock.timers.tick(20_000)
   await nextTurn()
   assert.equal(b.calls.length, attempts)
+  assert.deepEqual(replay.calls.map(call => call.text), ['Held', 'Follower'], 'the final waits for the old in-flight Draft even across replay')
   assert.equal(attempts, stage === 'Draft' ? 0 : 1)
+  await replay.queue.close()
 })
 
-for (const phase of ['wire', 'receipt', 'failed wire']) test(`close waits for an in-flight ${phase}, discards followers and never schedules retries`, async t => {
+for (const phase of ['wire', 'receipt', 'failed wire', 'dropped wire']) test(`close retains followers behind an in-flight ${phase} across replay`, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const gate = deferred()
   const started = deferred()
@@ -268,6 +277,7 @@ for (const phase of ['wire', 'receipt', 'failed wire']) test(`close waits for an
   const b = bench({ send: async () => {
     if (phase !== 'receipt') { started.resolve(); await gate.promise }
     if (phase === 'failed wire') throw new Error('network after stop')
+    if (phase === 'dropped wire') throw Object.assign(new Error('adapter dropped'), { stopped: true })
     return { messageId: 91 }
   } })
   const first = b.queue.output({ chat: forum, target: { botId: 'a' } }, { text: 'In flight' }, { sent: async (receipt, chat) => {
@@ -275,17 +285,24 @@ for (const phase of ['wire', 'receipt', 'failed wire']) test(`close waits for an
     receipts.push([receipt.messageId, chat.threadId])
   } })
   await started.promise
-  const second = b.queue.notice(forum, { text: 'Discarded' })
+  const second = b.queue.notice(forum, { text: 'Follower' })
   let stopped = false
   const closing = b.queue.close().then(() => { stopped = true })
   await nextTurn()
   assert.equal(stopped, false)
+  const replay = bench({ state: b.state })
+  replay.queue.retry()
+  await nextTurn()
+  assert.deepEqual(replay.calls, [], 'the old wire attempt must settle before replayed followers')
   gate.resolve()
   await closing
   await Promise.all([first, second])
   t.mock.timers.tick(20_000)
   assert.equal(b.calls.length, 1)
-  assert.deepEqual(receipts, phase === 'failed wire' ? [] : [[91, 40]])
+  assert.deepEqual(receipts, phase === 'dropped wire' ? [] : [[phase === 'failed wire' ? 1 : 91, 40]])
+  await nextTurn()
+  assert.deepEqual(replay.calls.map(call => call.text), phase === 'failed wire' ? ['In flight', 'Follower'] : ['Follower'])
+  await replay.queue.close()
 })
 
 test('Topic recovery is tried once and a revoked binding after recovery prevents resend', async () => {
@@ -386,4 +403,107 @@ for (const move of ['follow', 'recovery']) test(`Card receipt records the actual
   assert.deepEqual(data.cards['a:1'].map(copy => [copy.threadId, copy.messageId]), [[102, 77]])
   assert.equal(cards.open(b.conn, { ...direct, threadId: 102 }, 'a:1').entry.messageId, 77)
   await b.queue.close()
+})
+
+test('four failed attempts retain the Step, release its queue, and replay its original receipt', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let failing = true
+  const receipts = []
+  const b = bench({ send: async (_chat, content) => {
+    if (failing && content.text === 'First') throw new Error('offline')
+    return { messageId: content.text }
+  } })
+  const destination = { chat: forum, target: { botId: 'a' } }
+  const first = b.queue.output(destination, { text: 'First' }, { sent: receipt => receipts.push(receipt.messageId) })
+  const next = b.queue.output(destination, { text: 'Next' })
+  await nextTurn()
+  for (const wait of [5000, 10000, 20000]) {
+    t.mock.timers.tick(wait - 1)
+    await nextTurn()
+    const before = b.calls.length
+    t.mock.timers.tick(1)
+    await nextTurn()
+    assert.ok(b.calls.length > before)
+  }
+  await Promise.all([first, next])
+  assert.deepEqual(b.calls.map(call => call.text), ['First', 'First', 'First', 'First', 'Next'])
+  assert.match(b.statuses.at(-1).error, /after 4 attempts/)
+  assert.deepEqual(receipts, [])
+  failing = false
+  b.queue.retry()
+  await nextTurn()
+  assert.deepEqual(receipts, ['First'])
+  await b.queue.close()
+})
+
+test('Telegram retryAfter above thirty seconds is authoritative and consumes all four attempts', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const b = bench({ send: async () => { throw Object.assign(new Error('flood control'), { status: 429, retryAfter: 65 }) } })
+  const result = b.queue.notice(forum, { text: 'Limited' })
+  await nextTurn()
+  for (let attempt = 1; attempt < 4; attempt++) {
+    t.mock.timers.tick(64_999)
+    await nextTurn()
+    assert.equal(b.calls.length, attempt)
+    t.mock.timers.tick(1)
+    await nextTurn()
+    assert.equal(b.calls.length, attempt + 1)
+  }
+  await result
+  assert.match(b.statuses.at(-1).error, /after 4 attempts/)
+  t.mock.timers.tick(65000)
+  assert.equal(b.calls.length, 4)
+  await b.queue.close()
+})
+
+for (const revoke of ['unbind', 'Access']) test(`replay drops a Retained send after ${revoke} revocation`, async () => {
+  const b = bench({ send: async () => { throw Object.assign(new Error('forbidden'), { permanent: true }) } })
+  const address = revoke === 'unbind' ? forum : direct
+  await origin(b, address)
+  await b.queue.output(b.place.places(b.conn, { botId: 'a' }, 's', 'message')[0], { text: 'Retained' })
+  if (revoke === 'unbind') delete b.conn.chats[forum.key].topics[40].target
+  else b.conn.paired[0].access = { botIds: [], roomIds: [] }
+  b.queue.retry()
+  await nextTurn()
+  assert.equal(b.calls.length, 1)
+  await b.queue.close()
+})
+
+test('an interrupted send stays after older Retained sends and before its queued followers', async () => {
+  const entered = deferred()
+  const release = deferred()
+  const b = bench({ send: async (_chat, content) => {
+    if (content.text === 'Older') throw Object.assign(new Error('blocked'), { permanent: true })
+    entered.resolve()
+    await release.promise
+    throw new Error('interrupted')
+  } })
+  await b.queue.notice(forum, { text: 'Older' })
+  const head = b.queue.notice(forum, { text: 'Interrupted' })
+  await entered.promise
+  const follower = b.queue.notice(forum, { text: 'Follower' })
+  const closing = b.queue.close()
+  release.resolve()
+  await Promise.all([closing, head, follower])
+  const replay = bench({ state: b.state })
+  replay.queue.retry()
+  await nextTurn()
+  assert.deepEqual(replay.calls.map(call => call.text), ['Older', 'Interrupted', 'Follower'])
+  await replay.queue.close()
+})
+
+test('a Retained send keeps its single Topic recovery allowance across runner replacement', async () => {
+  let recoveries = 0
+  const send = async () => { throw Object.assign(new Error('missing'), { topicMissing: true, permanent: true }) }
+  const recoverTopic = async () => { recoveries++; return true }
+  const b = bench({ send, recoverTopic })
+  await b.queue.output({ chat: direct, target: { botId: 'a' } }, { text: 'Retained' })
+  assert.equal(recoveries, 1)
+  await b.queue.close()
+  const replay = bench({ state: b.state, send, recoverTopic })
+  replay.queue.retry()
+  await nextTurn()
+  assert.equal(replay.calls.length, 1)
+  assert.equal(recoveries, 1)
+  await replay.queue.close()
 })
