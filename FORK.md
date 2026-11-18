@@ -147,7 +147,6 @@ M	ds-bot/src/client/locales/ko.js
 M	ds-bot/src/client/team-actions.js
 M	ds-bot/src/host/browser/script-runner.js
 M	ds-bot/src/host/channel.js
-M	ds-bot/src/host/groups.js
 A	ds-bot/src/host/im/card-kinds.js
 A	ds-bot/src/host/im/cards.js
 A	ds-bot/src/host/im/chat-record.js
@@ -159,6 +158,7 @@ A	ds-bot/src/host/im/forum-bind.js
 A	ds-bot/src/host/im/inbound.js
 M	ds-bot/src/host/im/index.js
 A	ds-bot/src/host/im/locale.js
+A	ds-bot/src/host/im/origin.js
 A	ds-bot/src/host/im/placement.js
 M	ds-bot/src/host/im/platforms/dingtalk.js
 M	ds-bot/src/host/im/platforms/discord.js
@@ -204,7 +204,6 @@ M	ds-bot/test/install.test.js
 A	ds-bot/test/locale.test.js
 A	ds-bot/test/placement-fixture.js
 A	ds-bot/test/placement.test.js
-M	ds-bot/test/room-races.test.js
 M	ds-bot/test/rounds.test.js
 A	ds-bot/test/status-panel.test.js
 M	ds-bot/test/switch-keeps-input.test.js
